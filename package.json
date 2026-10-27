@@ -3,7 +3,7 @@
   "version": "1.3.0-beta.1",
   "description": "Reusable login and security gateway for OpenCode v2",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/hgn389/v2-opencode-web-login-module.git" },
   "homepage": "https://github.com/hgn389/v2-opencode-web-login-module#readme",
   "bugs": { "url": "https://github.com/hgn389/v2-opencode-web-login-module/issues" },
@@ -17,6 +17,7 @@
     "release:pack": "node scripts/release.mjs"
   },
   "files": [
+    "LICENSE",
     "index.mjs", "config.mjs", "security.mjs", "http-client.mjs", "cli.mjs", "server.mjs", "manage.mjs",
     "install.mjs", "login.html", "login-client.js", "admin-client.mjs", "admin-service.mjs", "provider-models.mjs", "update.mjs",
     "i18n-core.mjs", "i18n-server.mjs", "i18n-client.js", "locales.json", "locales/",

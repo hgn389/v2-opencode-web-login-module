@@ -220,4 +220,4 @@ The command name remains `opencode-web-login`. Replacing an older global package
 
 ## Attribution And License
 
-Derived from [hgn389/opencode-web-login-module](https://github.com/hgn389/opencode-web-login-module). OpenCode is a separate upstream project maintained at [anomalyco/opencode](https://github.com/anomalyco/opencode). Existing package license metadata is **UNLICENSED**; this preparation does not grant a new open-source license or alter upstream rights. Third-party components retain their own licenses. The bundled DejaVu font notice is preserved at `assets/LICENSE-fonts.txt`.
+Derived from [hgn389/opencode-web-login-module](https://github.com/hgn389/opencode-web-login-module). OpenCode is a separate upstream project maintained at [anomalyco/opencode](https://github.com/anomalyco/opencode). This repository is distributed under the MIT license provided by its owner; see `LICENSE`. Third-party components retain their own licenses. The bundled DejaVu font notice is preserved at `assets/LICENSE-fonts.txt`.
