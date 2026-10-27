@@ -226,6 +226,7 @@ export function createLoginServer(options = {}) {
         if ((await backend('/global/health')).status !== 401) throw new Error('Backend must require authentication');
         token = state.basicCredential(username, password, ctx.origin);
       } else {
+        if ((await backend('/api/info')).status !== 401) throw new Error('Backend must require authentication');
         const pairing = await backend('/api/pair', 'POST', { authorization });
         if (pairing.status !== 200) throw new Error('Pairing unavailable');
         const { code } = JSON.parse(pairing.body);

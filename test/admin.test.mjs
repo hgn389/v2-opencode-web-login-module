@@ -18,12 +18,16 @@ const nextPassword = 'private-fixture-new-password';
 const root = new URL('../', import.meta.url).pathname;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-function archiveFixture({ extras = [], missing, version = '1.0.1', badLock = false } = {}) {
+function archiveFixture({ extras = [], missing, version = '1.0.1', badLock = false, badIdentity } = {}) {
   const buffers = [];
   const entries = moduleFiles.filter(file => file !== missing).map(file => {
     let content = readFileSync(join(root, file));
     if (['package.json', 'npm-shrinkwrap.json'].includes(file)) {
       const value = JSON.parse(content); value.version = version;
+      if (file === 'npm-shrinkwrap.json') value.packages[''].version = version;
+      if (badIdentity === file) value.name = 'opencode-web-login';
+      if (badIdentity === 'lock-root' && file === 'npm-shrinkwrap.json') value.packages[''].name = 'opencode-web-login';
+      if (badIdentity === 'lock-version' && file === 'npm-shrinkwrap.json') value.packages[''].version = '0.0.0';
       if (badLock && file === 'npm-shrinkwrap.json') value.packages['node_modules/evil'] = { resolved: 'file:/root/secret', integrity: 'sha512-fixture' };
       content = Buffer.from(JSON.stringify(value));
     }
@@ -70,6 +74,8 @@ test('update extraction verifies digest, full manifest, identity and rejects tra
       { extras: [{ name: 'package/index.mjs', content: Buffer.from('bad'), type: 50 }] },
       { extras: [{ name: 'package/index.mjs', content: Buffer.from('bad'), type: 48 }] },
       { missing: 'admin-service.mjs' }, { badLock: true },
+      { badIdentity: 'package.json' }, { badIdentity: 'npm-shrinkwrap.json' },
+      { badIdentity: 'lock-root' }, { badIdentity: 'lock-version' },
     ];
     for (let i = 0; i < cases.length; i++) {
       const fixture = archiveFixture(cases[i]);
@@ -92,7 +98,7 @@ test('administration uses the existing session, keeps automatic updates off, per
   const config = { installDirectory };
   const deps = { stateDir: join(dir, 'state'), password: () => currentPassword,
     rotate: async () => { rotations++; }, launch: () => { launches++; },
-    release: async (version, selected) => { checks++; channel = selected; return { version: '1.0.1', url: 'https://github.com/hgn389/opencode-web-login-module/releases/tag/v1.0.1' }; },
+    release: async (version, selected) => { checks++; channel = selected; return { version: '1.0.1', url: 'https://github.com/hgn389/v2-opencode-web-login-module/releases/tag/v1.0.1' }; },
   };
   try {
     const controller = createAdminController(config, deps);

@@ -1,16 +1,20 @@
 {
-  "name": "opencode-web-login",
-  "version": "1.2.2-beta",
+  "name": "v2-opencode-web-login-module",
+  "version": "1.3.0-beta.1",
   "description": "Reusable login and security gateway for OpenCode v2",
   "private": true,
   "license": "UNLICENSED",
+  "repository": { "type": "git", "url": "https://github.com/hgn389/v2-opencode-web-login-module.git" },
+  "homepage": "https://github.com/hgn389/v2-opencode-web-login-module#readme",
+  "bugs": { "url": "https://github.com/hgn389/v2-opencode-web-login-module/issues" },
   "type": "module",
   "engines": { "node": ">=24" },
   "exports": { ".": "./index.mjs", "./config": "./config.mjs" },
   "bin": { "opencode-web-login": "./bin/opencode-web-login.mjs" },
   "scripts": {
     "start": "node bin/opencode-web-login.mjs serve",
-    "test": "node --no-warnings --test test/*.test.mjs"
+    "test": "node --no-warnings --test test/*.test.mjs",
+    "release:pack": "node scripts/release.mjs"
   },
   "files": [
     "index.mjs", "config.mjs", "security.mjs", "http-client.mjs", "cli.mjs", "server.mjs", "manage.mjs",

@@ -50,7 +50,8 @@ export function normalizeConfig(input = {}) {
   const localOrigin = `http://${authority}`;
   for (const origin of publicOrigins) {
     const url = new URL(origin);
-    if (url.origin !== origin || url.username || url.password || url.protocol !== 'https:') throw new Error('publicOrigins must contain exact HTTPS origins');
+    const explicitHttpIP = url.protocol === 'http:' && isIP(url.hostname.replace(/^\[|\]$/g, '')) !== 0;
+    if (url.origin !== origin || url.username || url.password || (url.protocol !== 'https:' && !explicitHttpIP)) throw new Error('publicOrigins must contain exact HTTPS origins or explicit HTTP IP origins');
   }
   for (const address of trustedProxies) {
     if (typeof address !== 'string') throw new Error('Invalid trusted proxy address');

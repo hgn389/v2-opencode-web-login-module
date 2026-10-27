@@ -87,6 +87,34 @@ test('v1 session credentials are encrypted, persistent, bound to origin, and rej
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('v2 login fails closed if backend authentication is disabled after startup', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'v2-unprotected-gateway-'));
+  let requirePassword = true, pairings = 0;
+  const backend = http.createServer((req, res) => {
+    if (requirePassword && !req.headers.authorization && req.url !== '/auth/connect/fixture') {
+      res.writeHead(401, { 'content-type': 'application/json' }); res.end('{}'); return;
+    }
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/api/info') res.end('{"version":"2.1.4"}');
+    else if (req.url === '/api/pair') { pairings++; res.end('{"code":"fixture"}'); }
+    else res.end('{"token":"fixture_token"}');
+  });
+  const backendPort = await listen(backend), reserve = http.createServer(), port = await listen(reserve);
+  await new Promise(done => reserve.close(done));
+  const origin = `http://127.0.0.1:${port}`, gateway = createLoginServer({ port, backendPort, statePath: join(directory, 'security.sqlite') });
+  await gateway.listen();
+  const login = async () => {
+    const form = await fetch(origin + '/login'), html = await form.text();
+    return fetch(origin + '/login', { method: 'POST', redirect: 'manual', headers: { origin, cookie: form.headers.getSetCookie()[0].split(';')[0], 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf: html.match(/name="csrf" value="([^"]+)"/)[1], username: 'opencode', password }) });
+  };
+  try {
+    assert.equal((await login()).status, 303);
+    const before = pairings; requirePassword = false;
+    assert.equal((await login()).status, 503);
+    assert.equal(pairings, before);
+  } finally { await gateway.close(); backend.closeAllConnections(); await new Promise(done => backend.close(done)); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('legacy login verifies backend protection, proxies credentials privately, and revokes on password rotation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'native-legacy-gateway-'));
   const auth = 'Basic ' + Buffer.from('opencode:' + password).toString('base64'); let requirePassword = true, acceptedPassword = auth;

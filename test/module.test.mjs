@@ -78,6 +78,8 @@ test('installer dry-run creates a portable, hardened plan without touching files
   assert.equal(plan.installDirectory, '/opt/login-test');
   assert(plan.files['/etc/login-test.env'].includes('LOGIN_HOST="192.0.2.10"'));
   assert(plan.files['/etc/systemd/system/login-test.service'].includes('User=login-test'));
+  assert(plan.files['/etc/systemd/system/login-test.service'].includes('RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK'));
+  assert(plan.files['/etc/systemd/system/login-test-admin.service'].includes('RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK'));
   assert(plan.files['/etc/systemd/system/login-test.service'].includes('Requires=coding.service'));
   assert(plan.files['/etc/systemd/system/login-test.service'].includes('WorkingDirectory=/opt/login-test\n'));
   assert(plan.files['/etc/systemd/system/coding.service.d/web-login.conf'].includes('"/usr/local/bin/opencode" serve --hostname 127.0.0.1 --port 8081'));

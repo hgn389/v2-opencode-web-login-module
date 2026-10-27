@@ -4,7 +4,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import languages from './locales.json' with { type: 'json' };
 
-export const repository = 'hgn389/opencode-web-login-module';
+export const repository = 'hgn389/v2-opencode-web-login-module';
+export const modulePackage = 'v2-opencode-web-login-module';
 export const openCodePackage = '@opencode/cli';
 export const legacyOpenCodePackage = 'opencode-ai';
 export const openCodePlatforms = ['linux-x64', 'linux-x64-baseline', 'linux-x64-musl', 'linux-x64-baseline-musl', 'linux-arm64', 'linux-arm64-musl', 'darwin-x64', 'darwin-x64-baseline', 'darwin-arm64', 'windows-x64', 'windows-x64-baseline', 'windows-arm64'].map(value => `${openCodePackage}-${value}`);
@@ -158,12 +159,12 @@ export async function download(url, limit = 2 * 1024 * 1024, { asset = false, si
   return Buffer.concat(chunks);
 }
 
-export async function latestRelease(current, channel) {
-  const releases = JSON.parse((await download(`https://api.github.com/repos/${repository}/releases?per_page=100`)).toString());
+export async function latestRelease(current, channel, { read = download } = {}) {
+  const releases = JSON.parse((await read(`https://api.github.com/repos/${repository}/releases?per_page=100`)).toString());
   const release = selectRelease(releases, current, channel);
   if (!release) return null;
   const version = versionParts(release.tag_name).value;
-  const filename = `opencode-web-login-${version}.tgz`;
+  const filename = `${modulePackage}-${version}.tgz`;
   const asset = release.assets?.find(a => a.name === filename && a.state === 'uploaded');
   const digest = asset?.digest;
   if (!asset || !/^sha256:[a-f0-9]{64}$/.test(digest || '') || !Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > 8 * 1024 * 1024 || asset.browser_download_url !== `https://github.com/${repository}/releases/download/${release.tag_name}/${filename}`) throw new Error('Release asset or SHA-256 digest missing');
@@ -195,7 +196,7 @@ export function extractPackage(archive, destination, expected) {
   for (const file of moduleFiles) if (!entries.has(file)) throw new Error('Incomplete module archive');
   const pkg = JSON.parse(entries.get('package.json').toString());
   const lock = JSON.parse(entries.get('npm-shrinkwrap.json').toString());
-  if (pkg.name !== 'opencode-web-login' || pkg.version !== expected.version || lock.name !== pkg.name || lock.version !== pkg.version || !lock.packages) throw new Error('Package identity mismatch');
+  if (pkg.name !== modulePackage || pkg.version !== expected.version || lock.name !== pkg.name || lock.version !== pkg.version || lock.packages?.['']?.name !== pkg.name || lock.packages[''].version !== pkg.version) throw new Error('Package identity mismatch');
   for (const [path, item] of Object.entries(lock.packages)) {
     if (!path) continue;
     if (!/^node_modules\/(?:@[^/]+\/)?[^/]+$/.test(path) || typeof item.resolved !== 'string' || !item.resolved.startsWith('https://registry.npmjs.org/') || !/^sha512-/.test(item.integrity || '') || item.link || item.hasInstallScript) throw new Error('Unsupported dependency lock entry');

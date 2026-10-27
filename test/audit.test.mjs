@@ -152,6 +152,7 @@ test('global session revocation cancels login verification already in progress',
   const path = join(dir, 'state.sqlite');
   const verified = deferred(), resume = deferred();
   const backend = http.createServer(async (req, res) => {
+    if (req.url === '/api/info' && !req.headers.authorization) { res.writeHead(401); res.end(); return; }
     if (req.url === '/api/info') { verified.resolve(); await resume.promise; }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(req.url === '/api/pair' ? { code: 'fixture' } : req.url === '/auth/connect/fixture' ? { token: 'native_fixture_token' } : { version: '2.0.1' }));

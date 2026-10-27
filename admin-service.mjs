@@ -98,11 +98,12 @@ function providerFileUnlocked(context, request) {
   const secretDirectory = join(context.directory, '.web-login-secrets');
   const keyPattern = /^[a-z0-9][a-z0-9_-]{0,79}\.key$/;
   const safeEndpoint = value => { try { const url = new URL(value); return providerText(value, 2048) && !/[{}]/.test(value) && ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash; } catch { return false; } };
+  const credentialHeader = name => /authorization|api.?key|token|secret|cookie/i.test(name);
   const summary = () => ({ status: 200, supported: true, revision: revision(text), providers: Object.entries(data.providers || {}).slice(0, 100).map(([id, provider]) => ({
     id, name: typeof provider?.name === 'string' ? provider.name : id,
     editable: provider?.package === providerPackage && Object.keys(provider.models || {}).length <= maximumProviderModels && (provider?.settings?.baseURL === undefined || safeEndpoint(provider.settings.baseURL)) && validProviderID(id),
     baseURL: safeEndpoint(provider?.settings?.baseURL) ? provider.settings.baseURL : '',
-    hasKey: Boolean(provider?.settings?.apiKey || provider?.env?.length),
+    hasKey: Boolean(provider?.settings?.apiKey || provider?.env?.length || Object.keys(provider?.headers || {}).some(credentialHeader)),
     models: Object.entries(provider?.models || {}).slice(0, maximumProviderModels).map(([id, model]) => ({ id, name: typeof model?.name === 'string' ? model.name : id })),
   })) });
   if (request.action === 'read') return summary();
@@ -128,7 +129,8 @@ function providerFileUnlocked(context, request) {
   if (request.action === 'remove' && !existing) throw providerFailure(404, 'Không tìm thấy nhà cung cấp trong tệp cấu hình này.');
   if (request.action === 'remove' && typeof data.model === 'string' && data.model.startsWith(input.id + '/')) throw providerFailure(422, 'Nhà cung cấp đang được đặt làm model mặc định. Hãy đổi model mặc định trước khi xóa.');
   if (request.action === 'save' && typeof data.model === 'string' && data.model.startsWith(input.id + '/') && !input.models.some(model => input.id + '/' + model.id === data.model)) throw providerFailure(422, 'Model đang được đặt làm mặc định chưa được chọn. Hãy giữ model đó hoặc đổi model mặc định trước khi lưu.');
-  if (request.action === 'save' && existing && existing.settings?.baseURL?.replace(/\/$/, '') !== input.baseURL && (existing.settings?.apiKey || existing.env?.length) && !input.apiKey && !input.clearKey) throw providerFailure(422, 'Khi đổi Base URL, hãy nhập lại hoặc xóa API key để tránh gửi khóa cũ tới địa chỉ mới.');
+  const endpointChanged = request.action === 'save' && existing && existing.settings?.baseURL?.replace(/\/$/, '') !== input.baseURL;
+  if (endpointChanged && (existing.settings?.apiKey || existing.env?.length || Object.keys(existing.headers || {}).length) && !input.apiKey && !input.clearKey) throw providerFailure(422, 'Khi đổi Base URL, hãy nhập lại hoặc xóa API key để tránh gửi khóa cũ tới địa chỉ mới.');
   const newKey = request.action === 'save' && input.apiKey ? join(secretDirectory, input.id + '-' + randomBytes(8).toString('hex') + '.key') : undefined;
   const reference = existing?.settings?.apiKey;
   const previousKey = typeof reference === 'string' && reference.startsWith('{file:') && reference.endsWith('}') ? reference.slice(6, -1) : undefined;
@@ -142,6 +144,11 @@ function providerFileUnlocked(context, request) {
     changes.push([['providers', input.id, 'models'], models]);
     if (input.apiKey) changes.push([['providers', input.id, 'settings', 'apiKey'], `{file:${newKey}}`]);
     if (input.clearKey) changes.push([['providers', input.id, 'settings', 'apiKey'], undefined], [['providers', input.id, 'env'], []]);
+    // Headers may carry credentials independently of settings.apiKey.
+    if (existing?.headers && (endpointChanged || input.apiKey || input.clearKey)) {
+      const headers = endpointChanged ? {} : Object.fromEntries(Object.entries(existing.headers).filter(([name]) => !credentialHeader(name)));
+      changes.push([['providers', input.id, 'headers'], Object.keys(headers).length ? headers : undefined]);
+    }
   }
   let updated = text;
   for (const [path, value] of changes) updated = applyEdits(updated, modify(updated, path, value, { formattingOptions: { tabSize: 2, insertSpaces: true, eol: text.includes('\r\n') ? '\r\n' : '\n' } }));
@@ -565,9 +572,11 @@ export function createAdminController(config, dependencies = {}) {
       if (current.status !== 200) throw providerFailure(current.status, current.message);
       if (!remove && !current.providers.some(provider => provider.id === input.id) && await providerExists(input.id)) throw providerFailure(409, 'ID này đã được OpenCode hoặc cấu hình khác sử dụng. Hãy chọn một ID tùy chỉnh mới.');
       if (!credentialUnchanged(credential)) throw providerFailure(401, 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
+      setJob({ type: 'providers', phase: 'running', started: Date.now(), context, recoveryRequired: true,
+        message: 'Đang áp dụng cấu hình provider; cần kiểm tra khôi phục nếu tác vụ bị gián đoạn.' });
       saved = await runProvider(context, remove ? { action: 'remove', id: input.id, revision: fields.revision } : { action: 'save', provider: input, revision: fields.revision });
       if (saved.status !== 200) throw providerFailure(saved.status, saved.message);
-      setJob({ type: 'providers', phase: 'running', started: Date.now(), context, backup: saved.backup, message: 'Đã lưu tệp riêng; đang tải lại cấu hình và kiểm tra model trong OpenCode.' });
+      setJob({ type: 'providers', phase: 'running', started: Date.now(), context, backup: saved.backup, recoveryRequired: true, message: 'Đã lưu tệp riêng; đang tải lại cấu hình và kiểm tra model trong OpenCode.' });
       await reloadProvider(input.id, input.models || [], remove, input.baseURL);
       setJob({ type: 'providers', phase: 'succeeded', message: remove ? 'Đã xóa nhà cung cấp tùy chỉnh và tải lại cấu hình OpenCode.' : 'Đã lưu nhà cung cấp tùy chỉnh; model đã xuất hiện trong OpenCode. Tải lại giao diện để chọn model.' });
     } catch (error) {
@@ -580,6 +589,7 @@ export function createAdminController(config, dependencies = {}) {
         } catch { restored = false; }
       }
       setJob({ type: 'providers', phase: 'failed', context: saved?.backup ? context : undefined, backup: saved?.backup,
+        recoveryRequired: !restored,
         message: saved?.backup ? restored ? 'Không áp dụng được provider; đã khôi phục cấu hình trước đó.' : 'Không áp dụng được provider; cần kiểm tra cấu hình và bản sao lưu riêng trên máy chủ.' : error.publicMessage || 'Không lưu được nhà cung cấp. Kiểm tra cấu hình và thử lại.' });
     }
   }
@@ -704,7 +714,7 @@ export async function serveAdmin(config) {
   const controller = createAdminController(config);
   const oldJob = json(join(paths(config).state, 'job.json'), null);
   if (oldJob?.type === 'password' && oldJob.phase === 'running') atomic(join(paths(config).state, 'job.json'), JSON.stringify({ type: 'password', phase: 'failed', message: 'Tác vụ đổi mật khẩu bị gián đoạn. Kiểm tra dịch vụ và đăng nhập lại.', updated: Date.now() }));
-  if (oldJob?.type === 'providers' && oldJob.phase === 'running') atomic(join(paths(config).state, 'job.json'), JSON.stringify({ ...oldJob, phase: 'failed', message: 'Tác vụ provider bị gián đoạn. Tải lại danh sách để kiểm tra cấu hình; bản sao lưu riêng vẫn được giữ.', updated: Date.now() }));
+  if (oldJob?.type === 'providers' && ['starting', 'running'].includes(oldJob.phase)) atomic(join(paths(config).state, 'job.json'), JSON.stringify({ ...oldJob, phase: 'failed', recoveryRequired: true, message: 'Tác vụ provider bị gián đoạn. Cần quản trị viên kiểm tra và khôi phục cấu hình từ bản sao lưu trước khi tiếp tục.', updated: Date.now() }));
   const directory = dirname(config.socket);
   const info = lstatSync(directory);
   if (!info.isDirectory() || info.uid !== 0 || info.mode & 0o027) throw new Error('Unsafe admin socket directory');

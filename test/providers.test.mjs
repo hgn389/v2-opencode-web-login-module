@@ -80,6 +80,7 @@ test('JSONC edits preserve other settings, hide stored keys, use private files a
     const text = readFileSync(f.file, 'utf8'), data = parse(text, [], { allowTrailingComma: true });
     assert(text.includes('// Preserve this comment')); assert.equal(data.shell, '/bin/bash'); assert.equal(data.providers.other.settings.apiKey, 'other-isolated-key');
     assert.equal(data.providers.acme.settings.timeout, 123); assert.equal(data.providers.acme.models.coder.limit.context, 4096);
+    assert.equal(data.providers.acme.headers, undefined);
     assert(data.providers.acme.settings.apiKey.startsWith('{file:')); assert(!text.includes(apiKey));
     const keyFile = data.providers.acme.settings.apiKey.slice(6, -1);
     assert.equal(readFileSync(keyFile, 'utf8'), apiKey); assert.equal(lstatSync(keyFile).mode & 0o777, 0o600);
@@ -89,6 +90,22 @@ test('JSONC edits preserve other settings, hide stored keys, use private files a
     assert.throws(() => providerFileOperation(f.context, { action: 'save', revision: before.revision, provider: provider() }), /thay đổi/);
     assert.equal(providerFileOperation(f.context, { action: 'restore', backup: saved.backup }).status, 200);
     assert.equal(readFileSync(f.file, 'utf8'), original); assert.equal(lstatSync(keyFile, { throwIfNoEntry: false }), undefined);
+  } finally { f.close(); }
+});
+
+test('provider header credentials cannot survive endpoint changes or explicit key clearing', () => {
+  const f = fixture();
+  try {
+    const original = { providers: { acme: { package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: 'https://old.example/v1' }, headers: { Authorization: 'private-header', 'X-Api-Key': 'private-key', 'X-Request-Format': 'json' }, models: { coder: { name: 'Coder' } } } } };
+    writeFileSync(f.file, JSON.stringify(original), { mode: 0o600 });
+    const read = () => providerFileOperation(f.context, { action: 'read' });
+    assert.equal(read().providers[0].hasKey, true);
+    assert.throws(() => providerFileOperation(f.context, { action: 'save', revision: read().revision, provider: { ...provider(), apiKey: '', baseURL: 'https://new.example/v1' } }), /nhập lại/);
+    providerFileOperation(f.context, { action: 'save', revision: read().revision, provider: { ...provider(), baseURL: 'https://old.example/v1', apiKey: '', clearKey: true } });
+    assert.deepEqual(parse(readFileSync(f.file, 'utf8')).providers.acme.headers, { 'X-Request-Format': 'json' });
+    assert.equal(read().providers[0].hasKey, false);
+    providerFileOperation(f.context, { action: 'save', revision: read().revision, provider: { ...provider(), baseURL: 'https://new.example/v1' } });
+    assert.equal(parse(readFileSync(f.file, 'utf8')).providers.acme.headers, undefined);
   } finally { f.close(); }
 });
 
@@ -160,6 +177,24 @@ test('provider jobs use session authorization and require acknowledgement, seria
       assert(!JSON.stringify(result).includes(apiKey)); assert(!readFileSync(join(stateDir, 'job.json'), 'utf8').includes(apiKey));
     } finally { f.close(); }
   }
+});
+
+test('provider rollback conflicts require recovery and block further administrative changes', async () => {
+  const f = fixture();
+  const code = join(f.directory, 'code'); mkdirSync(code); writeFileSync(join(code, 'package.json'), '{"version":"1.1.2-beta"}');
+  const stateDir = join(f.directory, 'state');
+  const controller = createAdminController({ installDirectory: code }, { stateDir, password: () => password, providerContext: async () => f.context,
+    providerWorker: async (context, request) => {
+      if (request.action === 'restore') throw new Error('External edit prevents restore');
+      return providerFileOperation(context, request);
+    }, providerExists: async () => false, providerReload: async () => { throw new Error('Reload failed'); } });
+  try {
+    const status = await controller.call({ operation: 'providers-status' });
+    assert.equal((await controller.call({ operation: 'provider-save', acknowledge: true, revision: status.providers.revision, provider: provider() })).status, 202);
+    for (let i = 0; i < 50; i++) { if ((await controller.call({ operation: 'status' })).job.phase === 'failed') break; await sleep(20); }
+    assert.equal((await controller.call({ operation: 'status' })).job.recoveryRequired, true);
+    assert.equal((await controller.call({ operation: 'preferences', password, automatic: true, channel: 'stable' })).status, 409);
+  } finally { f.close(); }
 });
 
 test('provider API enforces authentication, origin, CSRF and field restrictions; native config reads redact secrets and encoded aliases', async () => {
