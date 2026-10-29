@@ -371,15 +371,27 @@ export function createLoginServer(options = {}) {
       res.writeHead(200, { ...responseHeaders(ctx), 'content-type': url.pathname.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' });
       res.end(req.method === 'HEAD' ? undefined : asset); return;
     }
-    if (['/web-login/password', '/web-login/updates', '/web-login/opencode', '/web-login/providers'].includes(url.pathname) && ['GET', 'HEAD'].includes(req.method)) {
+    if (['/web-login/password', '/web-login/updates', '/web-login/opencode', '/web-login/providers', '/web-login/blacklist'].includes(url.pathname) && ['GET', 'HEAD'].includes(req.method)) {
       res.writeHead(200, { ...responseHeaders(ctx), 'x-frame-options': 'SAMEORIGIN', 'content-type': 'text/html; charset=utf-8',
         'content-security-policy': "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'self'; base-uri 'none'" });
-      res.end(req.method === 'HEAD' ? undefined : localizeHTML(adminPage, requestLocale(req))); return;
+      const html = url.searchParams.get('embedded') === '1' ? adminPage.replace('data-web-login-page', 'data-web-login-page data-embedded') : adminPage;
+      res.end(req.method === 'HEAD' ? undefined : localizeHTML(html, requestLocale(req))); return;
     }
     const operation = url.pathname.slice('/web-login/api/'.length);
-    if (!url.pathname.startsWith('/web-login/api/') || !['status', 'check', 'password', 'preferences', 'update', 'opencode-status', 'opencode-check', 'opencode-update', 'opencode-install', 'providers-status', 'provider-save', 'provider-remove', 'provider-models'].includes(operation)) return send(404, { message: 'Không tìm thấy trang.' });
+    if (!url.pathname.startsWith('/web-login/api/') || !['status', 'check', 'password', 'preferences', 'update', 'opencode-status', 'opencode-check', 'opencode-update', 'opencode-install', 'providers-status', 'provider-save', 'provider-remove', 'provider-models', 'blacklist-status', 'blacklist-unblock'].includes(operation)) return send(404, { message: 'Không tìm thấy trang.' });
     if (!state.allowRequest(ctx.ip, 'admin', 60)) return send(429, { message: 'Quá nhiều yêu cầu. Vui lòng thử lại sau một phút.' });
     if (req.headers['x-opencode-login'] !== '1' || req.headers['sec-fetch-site'] === 'cross-site' || (req.headers.origin && req.headers.origin !== ctx.origin)) return send(403, { message: 'Yêu cầu không hợp lệ.' });
+    if (operation === 'blacklist-status') {
+      if (req.method !== 'GET') return send(405, { message: 'Phương thức không hợp lệ.' });
+      const page = Number(url.searchParams.get('page') || 1), search = url.searchParams.get('search') || '';
+      if (!Number.isSafeInteger(page) || page < 1 || search.length > 64) return send(400, { message: 'Invalid blacklist query.' });
+      const verification = await readResponse({ hostname: backendHost, port: backendPort, path: session.token.startsWith('basic:') ? '/global/health' : '/api/info', headers: { authorization: state.sessionAuthorization(session) } }, { timeout: 3000, limit: 65536, signal: shutdown.signal });
+      if ([401, 403].includes(verification.status)) state.revoke(cookies(req)[ctx.cookie]);
+      if (!state.session(cookies(req)[ctx.cookie], ctx.origin, false) || state.state(ctx.ip).blocked) return send(401, { message: 'Vui lòng đăng nhập lại.', loginRequired: true });
+      if (verification.status !== 200) return send(503, { message: 'OpenCode tạm thời không khả dụng. Vui lòng thử lại.' });
+      const result = state.blacklist(page, search);
+      return send(200, { ...result, entries: result.entries.map(entry => ({ ...entry, country: null })), available: true, csrf: adminCSRF(ctx, session) });
+    }
     if (['status', 'opencode-status', 'providers-status'].includes(operation)) {
       if (req.method !== 'GET') return send(405, { message: 'Phương thức không hợp lệ.' });
       if (!config.adminSocket) return send(200, { available: false, message: 'Chưa bật dịch vụ quản trị. Cài lại bằng bộ cài Linux để sử dụng.', csrf: adminCSRF(ctx, session) });
@@ -394,7 +406,7 @@ export function createLoginServer(options = {}) {
       state.revoke(cookies(req)[ctx.cookie]);
       return send(401, { message: 'Vui lòng đăng nhập lại và nhập mã xác minh trước khi tiếp tục.', loginRequired: true });
     }
-    if (!config.adminSocket) return send(503, { message: 'Chưa bật dịch vụ quản trị.' });
+    if (!config.adminSocket && operation !== 'blacklist-unblock') return send(503, { message: 'Chưa bật dịch vụ quản trị.' });
     if (!state.begin(ctx.ip)) return send(429, { message: 'Yêu cầu trước đang được xử lý. Vui lòng chờ.' });
     try {
       let size = 0;
@@ -417,6 +429,13 @@ export function createLoginServer(options = {}) {
       }
       if (verification.status !== 200) return send(503, { message: 'OpenCode tạm thời không khả dụng. Vui lòng thử lại.' });
       if (!state.session(cookies(req)[ctx.cookie], ctx.origin, false) || state.state(ctx.ip).blocked) return send(401, { message: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', loginRequired: true });
+      if (operation === 'blacklist-unblock') {
+        if (Object.keys(fields).some(key => !['ip', 'updated'].includes(key)) || typeof fields.ip !== 'string' || !net.isIP(fields.ip) || !Number.isSafeInteger(fields.updated) || fields.updated < 0) return send(400, { message: 'Invalid blacklist entry.' });
+        const removed = state.unblock(fields.ip, fields.updated);
+        if (!removed) return send(409, { message: 'This block has changed or was already removed. Refresh the list.' });
+        console.log(JSON.stringify({ event: 'ip_unblocked', ip: fields.ip, actor: ctx.ip, at: new Date().toISOString() }));
+        return send(200, { removed: true });
+      }
       const picked = Object.fromEntries(['newPassword', 'confirmPassword', 'automatic', 'channel', 'acknowledge'].filter(key => Object.hasOwn(fields, key)).map(key => [key, fields[key]]));
       if (operation === 'opencode-install') picked.version = fields.version;
       if (['provider-save', 'provider-remove', 'provider-models'].includes(operation)) { picked.revision = fields.revision; if (operation === 'provider-remove') picked.id = fields.id; else picked.provider = fields.provider; }

@@ -2,7 +2,7 @@ import { i18n } from '/login/i18n-client.js';
 
 (() => {
   'use strict';
-  const items = [['password', 'Đổi mật khẩu'], ['updates', 'Cập nhật Web Login Module'], ['opencode', 'Update & Downgrade'], ['providers', 'Nhà cung cấp tùy chỉnh']];
+  const items = [['password', 'Đổi mật khẩu'], ['updates', 'Cập nhật Web Login Module'], ['opencode', 'Update & Downgrade'], ['providers', 'Nhà cung cấp tùy chỉnh'], ['blacklist', 'IP Blacklist']];
   let dialog, frame, focusBefore, providerPending = false;
   function close() {
     if (!dialog || providerPending) return;
@@ -26,7 +26,7 @@ import { i18n } from '/login/i18n-client.js';
       }
     };
     for (const [page, label] of items) {
-      const link = document.createElement('a'); link.href = `/web-login/${page}`; link.dataset.page = page; i18n.text(link, () => label);
+      const link = document.createElement('a'); link.href = `/web-login/${page}?embedded=1`; link.dataset.page = page; i18n.text(link, () => label);
       link.addEventListener('click', event => {
         if (event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
         event.preventDefault();
@@ -38,7 +38,7 @@ import { i18n } from '/login/i18n-client.js';
     }
     const button = document.createElement('button'); button.type = 'button'; i18n.text(button, () => ('Đóng')); button.addEventListener('click', close);
     header.append(navigation, button);
-    frame = document.createElement('iframe'); frame.src = `/web-login/${id}`; i18n.attr(frame, 'title', () => (title));
+    frame = document.createElement('iframe'); frame.src = `/web-login/${id}?embedded=1`; i18n.attr(frame, 'title', () => (title));
     const currentFrame = frame;
     frame.addEventListener('load', () => {
       if (frame !== currentFrame) return;

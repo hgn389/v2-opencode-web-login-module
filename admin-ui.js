@@ -8,10 +8,12 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
   const passwordPage = location.pathname.endsWith('/password');
   const nativePage = location.pathname.endsWith('/opencode');
   const providersPage = location.pathname.endsWith('/providers');
-  document.querySelector(passwordPage ? '#password-page' : nativePage ? '#opencode-page' : providersPage ? '#providers-page' : '#updates-page').hidden = false;
-  i18n.text(document.querySelector('title'), () => i18n.t(passwordPage ? 'Đổi mật khẩu' : nativePage ? 'Update & Downgrade' : providersPage ? 'Nhà cung cấp tùy chỉnh' : 'Cập nhật Web Login Module') + ' · OpenCode');
+  const blacklistPage = location.pathname.endsWith('/blacklist');
+  document.querySelector(blacklistPage ? '#blacklist-page' : passwordPage ? '#password-page' : nativePage ? '#opencode-page' : providersPage ? '#providers-page' : '#updates-page').hidden = false;
+  i18n.text(document.querySelector('title'), () => (blacklistPage ? 'IP Blacklist' : i18n.t(passwordPage ? 'Đổi mật khẩu' : nativePage ? 'Update & Downgrade' : providersPage ? 'Nhà cung cấp tùy chỉnh' : 'Cập nhật Web Login Module')) + ' · OpenCode');
   document.querySelectorAll('form button, #check-update, #native-check').forEach(button => { button.disabled = true; });
   let csrf, busy = false, available = false, timer, reconnecting = false, watchingJob = false, nativeInfo, nativeLocked;
+  let blacklistPageNumber = 1, blacklistTotal = 0, blacklistPageSize = 50, blacklistLoading = false, blacklistRefreshPending = false, blacklistSearchTimer;
   let providerData, providerRevision, providerLocked, providerPendingId;
   let providerPendingVisibility, providerVisibilityRetry, modelPreferences, providerSubmitting = false;
   const providerForm = document.querySelector('#provider-form');
@@ -49,6 +51,52 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     if (!response.ok) throw Object.assign(new Error(data.message || 'Không xử lý được yêu cầu.'), { status: response.status });
     return data;
   }
+  function lockBlacklist() {
+    document.querySelectorAll('#blacklist-page button').forEach(button => { button.disabled = busy || blacklistLoading; });
+    document.querySelectorAll('#blacklist-rows button').forEach(button => { button.disabled ||= !available; });
+    document.querySelector('#blacklist-previous').disabled ||= blacklistPageNumber <= 1;
+    document.querySelector('#blacklist-next').disabled ||= blacklistPageNumber * blacklistPageSize >= blacklistTotal;
+  }
+  async function refreshBlacklist() {
+    if (blacklistLoading) { blacklistRefreshPending = true; return; }
+    blacklistLoading = true; lockBlacklist();
+    try {
+      const query = new URLSearchParams({ page: String(blacklistPageNumber), search: document.querySelector('#blacklist-search').value.trim() });
+      const data = await call(`blacklist-status?${query}`);
+      if (blacklistRefreshPending || query.get('search') !== document.querySelector('#blacklist-search').value.trim()) { blacklistRefreshPending = true; return; }
+      csrf = data.csrf; available = true;
+      blacklistPageNumber = data.page; blacklistTotal = data.total; blacklistPageSize = data.pageSize;
+      const rows = document.querySelector('#blacklist-rows'); rows.replaceChildren();
+      for (const entry of data.entries) {
+        const row = document.createElement('tr');
+        for (const value of [entry.ip, entry.country || 'Unknown', String(entry.failures), new Date(entry.updated).toLocaleString()]) {
+          const cell = document.createElement('td'); cell.textContent = value; row.append(cell);
+        }
+        row.firstChild.dir = 'ltr';
+        const action = document.createElement('td'), button = document.createElement('button');
+        button.type = 'button'; button.textContent = 'Unblock'; button.setAttribute('aria-label', `Unblock ${entry.ip}`);
+        button.addEventListener('click', async () => {
+          if (busy || blacklistLoading || !available || !confirm(`Unblock ${entry.ip} and reset its failed sign-in attempts?`)) return;
+          busy = true; lockBlacklist();
+          try { await call('blacklist-unblock', { ip: entry.ip, updated: entry.updated }); message(`Unblocked ${entry.ip}.`); }
+          catch (error) { message(error.message); }
+          finally { busy = false; await refreshWithRetry(); }
+        });
+        action.append(button); row.append(action); rows.append(row);
+      }
+      document.querySelector('#blacklist-summary').textContent = data.total ? `${data.total} blocked IP address${data.total === 1 ? '' : 'es'} matching this search.` : 'No blocked IP addresses matching this search.';
+      document.querySelector('#blacklist-page-number').textContent = `${data.page} / ${Math.max(1, Math.ceil(data.total / data.pageSize))}`;
+    } finally {
+      blacklistLoading = false; lockBlacklist();
+      if (blacklistRefreshPending) { blacklistRefreshPending = false; queueMicrotask(refreshWithRetry); }
+    }
+  }
+  document.querySelector('#blacklist-refresh').addEventListener('click', refreshWithRetry);
+  for (const [id, direction] of [['blacklist-previous', -1], ['blacklist-next', 1]]) document.getElementById(id).addEventListener('click', () => { blacklistPageNumber += direction; refreshWithRetry(); });
+  document.querySelector('#blacklist-search').addEventListener('input', () => {
+    clearTimeout(blacklistSearchTimer);
+    blacklistSearchTimer = setTimeout(() => { blacklistPageNumber = 1; refreshWithRetry(); }, 300);
+  });
   function scheduleRefresh(delay = 3000) {
     clearTimeout(timer);
     timer = setTimeout(refreshWithRetry, delay);
@@ -59,6 +107,7 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
       if (reconnecting) { reconnecting = false; message('Đã kết nối lại với dịch vụ.'); }
     } catch (error) {
       available = false;
+      if (blacklistPage) { document.querySelector('#blacklist-summary').textContent = error.message || 'Unable to load blocked IP addresses.'; lockBlacklist(); }
       document.querySelectorAll('form button, #check-update, #native-check').forEach(button => { button.disabled = true; });
       document.querySelector('#provider-refresh').disabled = true;
       if (providersPage) lockProvider();
@@ -193,7 +242,7 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     if (window.parent !== window && window.frameElement?.closest('.web-login-dialog')) window.parent.location.reload();
     else location.href = '/';
   });
-  function syncVisibilitySwitches() {
+  function syncVisibilityCheckboxes() {
     const preferences = readModelPreferences(localStorage);
     for (const input of visibilityModels.querySelectorAll('input')) input.checked = modelVisible(preferences, input.dataset.visibilityProvider, input.dataset.visibilityModel);
   }
@@ -205,7 +254,7 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
       visibilityCatalogKey = key;
       renderVisibilityModels(providers);
     } else {
-      try { syncVisibilitySwitches(); } catch { /* Keep the current controls when storage is temporarily unavailable. */ }
+      try { syncVisibilityCheckboxes(); } catch { /* Keep the current controls when storage is temporarily unavailable. */ }
     }
   }
   function renderVisibilityModels(providers) {
@@ -222,15 +271,14 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
       const providerID = document.createElement('code'); providerID.className = 'provider-visibility-provider-id'; providerID.textContent = provider.id; providerID.dir = 'ltr';
       group.append(heading, providerID);
       for (const model of provider.models) {
-        const row = document.createElement('label'); row.className = 'model-visibility provider-visibility-row';
+        const row = document.createElement('label'); row.className = 'provider-visibility-row';
         const text = document.createElement('span'); text.className = 'provider-visibility-name';
         const name = document.createElement('strong'); name.textContent = model.name || model.id;
-        const id = document.createElement('code'); id.textContent = model.id; id.dir = 'ltr'; text.append(name, id);
-        const input = document.createElement('input'); input.type = 'checkbox'; input.setAttribute('role', 'switch'); input.dataset.visibilityProvider = provider.id; input.dataset.visibilityModel = model.id; input.checked = modelVisible(preferences, provider.id, model.id);
+        text.append(name); if (model.id !== (model.name || model.id)) text.title = model.id;
+        const input = document.createElement('input'); input.type = 'checkbox'; input.dataset.visibilityProvider = provider.id; input.dataset.visibilityModel = model.id; input.checked = modelVisible(preferences, provider.id, model.id);
         i18n.attr(input, 'aria-label', () => `${i18n.t('Hiển thị trong bộ chọn')} · ${provider.name || provider.id} · ${model.name || model.id} · ${model.id}`);
-        const track = document.createElement('span'); track.className = 'model-switch-track'; track.setAttribute('aria-hidden', 'true');
         input.addEventListener('change', () => { if (!saveVisibilityChoices([{ providerID: provider.id, choices: [{ modelID: model.id, visible: input.checked }] }])) input.checked = !input.checked; });
-        row.append(text, input, track); group.append(row);
+        row.append(input, text); group.append(row);
       }
       fragment.append(group);
     }
@@ -247,11 +295,11 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
   }
   for (const [id, visible] of [['#provider-visibility-all', true], ['#provider-visibility-none', false]]) document.querySelector(id).addEventListener('click', () => {
     const groups = [...visibilityModels.querySelectorAll('[data-visibility-group]')].map(group => ({ providerID: group.dataset.visibilityGroup, choices: [...group.querySelectorAll('input')].map(input => ({ modelID: input.dataset.visibilityModel, visible })) }));
-    if (saveVisibilityChoices(groups)) syncVisibilitySwitches();
+    if (saveVisibilityChoices(groups)) syncVisibilityCheckboxes();
   });
   window.addEventListener('storage', event => {
     if (providersPage && (event.key === modelPreferenceKey || event.key === null)) {
-      try { syncVisibilitySwitches(); } catch { /* Do not replace preferences from an invalid storage event. */ }
+      try { syncVisibilityCheckboxes(); } catch { /* Do not replace preferences from an invalid storage event. */ }
     }
   });
   function renderProviders() {
@@ -481,7 +529,7 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     } catch (error) { message(error.message); }
     finally { busy = false; providerSubmitting = false; refreshWithRetry(); }
   });
-  async function refresh() { draw(await call(nativePage ? 'opencode-status' : providersPage ? 'providers-status' : 'status')); }
+  async function refresh() { if (blacklistPage) return refreshBlacklist(); draw(await call(nativePage ? 'opencode-status' : providersPage ? 'providers-status' : 'status')); }
   for (const [selector, operation] of [['#check-update', 'check'], ['#native-check', 'opencode-check']]) document.querySelector(selector).addEventListener('click', async event => {
     event.target.disabled = true;
     try { draw(await call(operation, {})); }

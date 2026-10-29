@@ -51,6 +51,21 @@ export class SecurityStore {
     return this.db.prepare('SELECT failures, blocked FROM login_ips WHERE ip = ?').get(ip) || { failures: 0, blocked: 0 };
   }
 
+  blacklist(page = 1, search = '') {
+    if (!Number.isSafeInteger(page) || page < 1 || typeof search !== 'string' || search.length > 64) throw new Error('Invalid blacklist query');
+    const filter = search.trim().toLowerCase();
+    const total = this.db.prepare('SELECT COUNT(*) AS total FROM login_ips WHERE blocked = 1 AND instr(lower(ip), ?) > 0').get(filter).total;
+    const pageSize = 50;
+    page = Math.min(page, Math.max(1, Math.ceil(total / pageSize)));
+    const entries = this.db.prepare('SELECT ip, failures, updated FROM login_ips WHERE blocked = 1 AND instr(lower(ip), ?) > 0 ORDER BY updated DESC, ip LIMIT ? OFFSET ?').all(filter, pageSize, (page - 1) * pageSize);
+    return { entries, total, page, pageSize };
+  }
+
+  unblock(ip, updated) {
+    // Do not remove a newer block while an administrator is viewing an old row.
+    return this.db.prepare('DELETE FROM login_ips WHERE ip = ? AND blocked = 1 AND updated = ?').run(ip, updated).changes > 0;
+  }
+
   fail(ip) {
     const row = this.db.prepare(`INSERT INTO login_ips(ip, failures, blocked, updated) VALUES (?, 1, 0, ?)
       ON CONFLICT(ip) DO UPDATE SET failures = MIN(failures + 1, 10),
