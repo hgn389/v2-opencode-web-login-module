@@ -443,6 +443,25 @@ export function createLoginServer(options = {}) {
     try {
       const url = new URL(req.url, ctx.origin);
       if (url.origin !== ctx.origin) return reject(res, ctx, 400, 'Yêu cầu không hợp lệ.');
+      // OpenCode's offline shell omits gateway-injected authentication UI hooks.
+      // Retire the root worker without deleting browser storage or reloading tabs.
+      if (url.pathname === '/sw.js') {
+        if (!['GET', 'HEAD'].includes(req.method)) return reject(res, ctx, 405, 'Phương thức không hợp lệ.');
+        res.writeHead(200, { ...responseHeaders(ctx), 'content-type': 'text/javascript; charset=utf-8' });
+        res.end(req.method === 'HEAD' ? undefined : "self.addEventListener('install',event=>event.waitUntil(self.skipWaiting()));self.addEventListener('activate',event=>event.waitUntil((async()=>{await self.clients.claim();await self.registration.unregister();})()));");
+        return;
+      }
+      // /api is excluded from the upstream worker's cached-navigation fallback.
+      if (url.pathname === '/api/web-login-browser-recovery' || url.pathname === '/api/web-login-browser-recovery.js') {
+        if (!['GET', 'HEAD'].includes(req.method)) return reject(res, ctx, 405, 'Phương thức không hợp lệ.');
+        const script = url.pathname.endsWith('.js');
+        const body = script
+          ? `document.querySelector('button').addEventListener('click',async()=>{const status=document.querySelector('p');try{if('serviceWorker' in navigator){const registrations=await navigator.serviceWorker.getRegistrations();for(const registration of registrations){const workers=[registration.active,registration.waiting,registration.installing].filter(Boolean);if(registration.scope===location.origin+'/'&&workers.some(worker=>new URL(worker.scriptURL).pathname==='/sw.js')){await registration.update();await registration.unregister();}}}location.replace('/settings');}catch{status.textContent='Recovery failed. Close other OpenCode tabs and try again.';}});`
+          : '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Restore Settings menus</title><h1>Restore Settings menus</h1><p>Save work in other OpenCode tabs first. This removes the old offline worker for this origin, then opens Settings. Cookies, local storage and conversations are not deleted.</p><button type="button">Restore menus and open Settings</button><script src="/api/web-login-browser-recovery.js" defer></script></html>';
+        res.writeHead(200, { ...responseHeaders(ctx), 'content-type': script ? 'text/javascript; charset=utf-8' : 'text/html; charset=utf-8', 'content-security-policy': "default-src 'none'; script-src 'self'; worker-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'" });
+        res.end(req.method === 'HEAD' ? undefined : body);
+        return;
+      }
       if (localeAssets.has(url.pathname) || url.pathname === '/login/locales' || /^\/login\/locales\/[a-z]{2,3}\.json$/.test(url.pathname)) {
         if (!['GET', 'HEAD'].includes(req.method)) return reject(res, ctx, 405, 'Phương thức không hợp lệ.');
         const javascript = localeAssets.has(url.pathname);
