@@ -1,12 +1,12 @@
 {
   "name": "v2-opencode-web-login-module",
-  "version": "1.3.0-beta.1",
+  "version": "1.3.0-beta.2",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "v2-opencode-web-login-module",
-      "version": "1.3.0-beta.1",
+      "version": "1.3.0-beta.2",
       "license": "MIT",
       "dependencies": {
         "@napi-rs/canvas": "1.0.10",
