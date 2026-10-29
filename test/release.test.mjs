@@ -15,7 +15,10 @@ test('module updates use only the new repository, exact asset path and GitHub SH
   assert.equal(repository, 'hgn389/v2-opencode-web-login-module');
   assert.equal(modulePackage, 'v2-opencode-web-login-module');
   assert.equal(pkg.name, modulePackage);
-  assert.equal(pkg.version, '1.3.0-beta.1');
+  assert.match(pkg.version, /^\d+\.\d+\.\d+-beta\.\d+$/);
+  const lock = JSON.parse(readFileSync(join(root, 'npm-shrinkwrap.json'), 'utf8'));
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[''].version, pkg.version);
   assert(compareVersions(pkg.version, '1.2.2-beta') > 0);
   const filename = `${modulePackage}-${pkg.version}.tgz`;
   const url = `https://github.com/${repository}/releases/download/v${pkg.version}/${filename}`;

@@ -21,3 +21,4 @@ opencode.json
 opencode.jsonc
 .web-login-secrets/
 provider-backup/
+test/live-clean-readonly.mjs
