@@ -16,6 +16,9 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
   let blacklistPageNumber = 1, blacklistTotal = 0, blacklistPageSize = 50, blacklistLoading = false, blacklistRefreshPending = false, blacklistSearchTimer;
   let providerData, providerRevision, providerLocked, providerPendingId;
   let providerPendingVisibility, providerVisibilityRetry, modelPreferences, providerSubmitting = false;
+  let providerImportPending = false, providerImportBackup;
+  const providerImportFile = document.querySelector('#provider-import-file');
+  const backupFormat = 'opencode-web-login-providers', maximumBackupBytes = 2 * 1024 * 1024;
   const providerForm = document.querySelector('#provider-form');
   const providerEditor = document.querySelector('#provider-editor');
   const providerList = document.querySelector('#provider-list');
@@ -56,8 +59,18 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     document.querySelectorAll('#blacklist-rows button').forEach(button => { button.disabled ||= !available; });
     document.querySelector('#blacklist-previous').disabled ||= blacklistPageNumber <= 1;
     document.querySelector('#blacklist-next').disabled ||= blacklistPageNumber * blacklistPageSize >= blacklistTotal;
+    const boxes = [...document.querySelectorAll('#blacklist-rows input[type=checkbox]')];
+    const selected = boxes.filter(input => input.checked).length;
+    const all = document.querySelector('#blacklist-select-all');
+    all.checked = boxes.length > 0 && selected === boxes.length;
+    all.indeterminate = selected > 0 && selected < boxes.length;
+    all.disabled = busy || blacklistLoading || !available || !boxes.length;
+    boxes.forEach(input => { input.disabled = busy || blacklistLoading || !available; });
+    document.querySelector('#blacklist-delete').disabled = busy || blacklistLoading || !available || !selected;
+    document.querySelector('#blacklist-selected-count').textContent = `${selected} / ${boxes.length} đã chọn trên trang này`;
   }
   async function refreshBlacklist() {
+    if (busy) { blacklistRefreshPending = true; return; }
     if (blacklistLoading) { blacklistRefreshPending = true; return; }
     blacklistLoading = true; lockBlacklist();
     try {
@@ -65,14 +78,18 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
       const data = await call(`blacklist-status?${query}`);
       if (blacklistRefreshPending || query.get('search') !== document.querySelector('#blacklist-search').value.trim()) { blacklistRefreshPending = true; return; }
       csrf = data.csrf; available = true;
+      clearTimeout(timer);
       blacklistPageNumber = data.page; blacklistTotal = data.total; blacklistPageSize = data.pageSize;
       const rows = document.querySelector('#blacklist-rows'); rows.replaceChildren();
       for (const entry of data.entries) {
         const row = document.createElement('tr');
+        const selection = document.createElement('td'), checkbox = document.createElement('input');
+        checkbox.type = 'checkbox'; checkbox.dataset.ip = entry.ip; checkbox.dataset.updated = String(entry.updated); checkbox.setAttribute('aria-label', `Chọn ${entry.ip}`);
+        checkbox.addEventListener('change', lockBlacklist); selection.append(checkbox); row.append(selection);
         for (const value of [entry.ip, entry.country || 'Unknown', String(entry.failures), new Date(entry.updated).toLocaleString()]) {
           const cell = document.createElement('td'); cell.textContent = value; row.append(cell);
         }
-        row.firstChild.dir = 'ltr';
+        row.children[1].dir = 'ltr';
         const action = document.createElement('td'), button = document.createElement('button');
         button.type = 'button'; button.textContent = 'Unblock'; button.setAttribute('aria-label', `Unblock ${entry.ip}`);
         button.addEventListener('click', async () => {
@@ -92,6 +109,19 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     }
   }
   document.querySelector('#blacklist-refresh').addEventListener('click', refreshWithRetry);
+  document.querySelector('#blacklist-select-all').addEventListener('change', event => {
+    document.querySelectorAll('#blacklist-rows input[type=checkbox]').forEach(input => { input.checked = event.target.checked; });
+    lockBlacklist();
+  });
+  document.querySelector('#blacklist-delete').addEventListener('click', async () => {
+    if (busy || blacklistLoading || !available) return;
+    const entries = [...document.querySelectorAll('#blacklist-rows input:checked')].map(input => ({ ip: input.dataset.ip, updated: Number(input.dataset.updated) }));
+    if (!entries.length || !confirm(`Xóa lệnh chặn của ${entries.length} IP đã chọn? Các IP này sẽ được phép đăng nhập lại và bộ đếm đăng nhập sai sẽ được đặt lại.`)) return;
+    busy = true; lockBlacklist();
+    try { const result = await call('blacklist-unblock-batch', { entries }); document.querySelector('#blacklist-operation-error').textContent = ''; message(`Đã xóa lệnh chặn của ${result.removed} IP.`); }
+    catch (error) { document.querySelector('#blacklist-operation-error').textContent = `${error.message} Danh sách sẽ được tải lại; vui lòng chọn lại các IP trước khi thử tiếp.`; message(error.message); }
+    finally { busy = false; await refreshWithRetry(); }
+  });
   for (const [id, direction] of [['blacklist-previous', -1], ['blacklist-next', 1]]) document.getElementById(id).addEventListener('click', () => { blacklistPageNumber += direction; refreshWithRetry(); });
   document.querySelector('#blacklist-search').addEventListener('input', () => {
     clearTimeout(blacklistSearchTimer);
@@ -141,6 +171,10 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     if (passwordPage) return;
     if (providersPage) {
       providerData = data.providers || {}; providerLocked = locked;
+      if (providerImportPending && ['succeeded', 'failed'].includes(data.job?.phase)) {
+        providerImportPending = false;
+        document.querySelector('#provider-import-status').textContent = data.job.phase === 'succeeded' ? 'Import completed. OpenCode configuration reloaded.' : 'Import failed. Refresh the list before trying again.';
+      }
       renderProviders();
       let savedProvider;
       if (providerPendingId !== undefined && data.job?.phase === 'succeeded') {
@@ -214,8 +248,11 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     drawNativeTarget();
   });
   function lockProvider() {
-    const locked = !available || providerLocked || !providerData?.supported;
-    const disabled = busy || locked;
+    const locked = !available || providerLocked || !providerData?.supported || providerImportPending || watchingJob;
+    const disabled = busy || locked || providerSubmitting || providerImportPending || watchingJob;
+    document.querySelectorAll('#provider-backup input, #provider-backup button').forEach(control => { control.disabled = disabled; });
+    document.querySelector('#provider-import').disabled ||= !providerImportBackup;
+    document.querySelector('#provider-import-clear').disabled ||= !providerImportFile.value;
     providerForm.querySelectorAll('input, button').forEach(control => { control.disabled = locked || busy && (!automaticScanning || control.tagName === 'BUTTON'); });
     document.querySelector('#provider-new').disabled = disabled;
     providerList.querySelectorAll('button').forEach(button => { button.disabled = disabled || button.dataset.editable !== 'true'; });
@@ -224,10 +261,10 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     document.querySelector('#provider-add-model').disabled = disabled || modelRows().length >= maximumProviderModels;
     providerForm.elements.apiKey.disabled = locked || busy && !automaticScanning || providerForm.elements.clearKey.checked;
     for (const row of modelRows()) row.querySelector('[data-model-visible]').disabled ||= !row.querySelector('[data-model-selected]').checked;
-    document.querySelector('#provider-visibility-reload').disabled = busy || providerPendingId !== undefined;
+    document.querySelector('#provider-visibility-reload').disabled = disabled || providerPendingId !== undefined;
     const noModels = !visibilityModels.querySelector('input');
     document.querySelectorAll('#provider-visibility-controls input, #provider-visibility-controls .visibility-bulk').forEach(control => { control.disabled = disabled || noModels; });
-    if (providersPage && window.parent !== window) window.parent.postMessage({ type: 'web-login-provider-pending', pending: providerSubmitting || providerPendingId !== undefined }, location.origin);
+    if (providersPage && window.parent !== window) window.parent.postMessage({ type: 'web-login-provider-pending', pending: providerSubmitting || providerImportPending || watchingJob || providerLocked || providerPendingId !== undefined }, location.origin);
   }
   function applyProviderVisibility() {
     if (!providerVisibilityRetry) return true;
@@ -258,27 +295,39 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     }
   }
   function renderVisibilityModels(providers) {
+    const expanded = new Map([...visibilityModels.querySelectorAll('details[data-visibility-group]')].map(group => [group.dataset.visibilityGroup, group.open]));
     visibilityModels.replaceChildren();
     document.querySelector('#provider-visibility-empty').hidden = Boolean(providers.length);
     let preferences;
     try { preferences = readModelPreferences(localStorage); }
     catch { message('Không truy cập được bộ nhớ trình duyệt. Hãy cho phép lưu trữ rồi thử lại.'); return; }
     const fragment = document.createDocumentFragment();
-    for (const provider of providers) {
-      const group = document.createElement('section'); group.className = 'provider-visibility-group'; group.dataset.visibilityGroup = provider.id;
+    for (const [providerIndex, provider] of providers.entries()) {
+      const group = document.createElement('details'); group.className = 'provider-visibility-group'; group.dataset.visibilityGroup = provider.id; group.open = expanded.get(provider.id) ?? false;
+      const summary = document.createElement('summary');
       const heading = document.createElement('h3'); heading.id = `visibility-group-${provider.id}`; heading.textContent = provider.name || provider.id;
       group.setAttribute('aria-labelledby', heading.id);
       const providerID = document.createElement('code'); providerID.className = 'provider-visibility-provider-id'; providerID.textContent = provider.id; providerID.dir = 'ltr';
-      group.append(heading, providerID);
-      for (const model of provider.models) {
+      const count = document.createElement('span'); count.className = 'provider-visibility-count'; count.textContent = String(provider.models.length);
+      const sequence = document.createElement('span'); sequence.className = 'provider-sequence'; sequence.textContent = `${providerIndex + 1}.`;
+      summary.append(sequence, heading, count, providerID);
+      const models = document.createElement('div'); models.className = 'provider-visibility-group-models';
+      group.append(summary, models);
+      for (const [modelIndex, model] of provider.models.entries()) {
         const row = document.createElement('label'); row.className = 'provider-visibility-row';
         const text = document.createElement('span'); text.className = 'provider-visibility-name';
-        const name = document.createElement('strong'); name.textContent = model.name || model.id;
-        text.append(name); if (model.id !== (model.name || model.id)) text.title = model.id;
+        const displayName = model.name || model.id, split = displayName.lastIndexOf('/') + 1;
+        const name = document.createElement('strong'); name.textContent = displayName.slice(split);
+        text.append(document.createTextNode(displayName.slice(0, split)), name); if (model.id !== displayName) text.title = model.id;
         const input = document.createElement('input'); input.type = 'checkbox'; input.dataset.visibilityProvider = provider.id; input.dataset.visibilityModel = model.id; input.checked = modelVisible(preferences, provider.id, model.id);
+        input.setAttribute('role', 'switch');
+        const toggle = document.createElement('span'); toggle.className = 'model-visibility';
+        const track = document.createElement('span'); track.className = 'model-switch-track'; track.setAttribute('aria-hidden', 'true');
+        toggle.append(input, track);
         i18n.attr(input, 'aria-label', () => `${i18n.t('Hiển thị trong bộ chọn')} · ${provider.name || provider.id} · ${model.name || model.id} · ${model.id}`);
         input.addEventListener('change', () => { if (!saveVisibilityChoices([{ providerID: provider.id, choices: [{ modelID: model.id, visible: input.checked }] }])) input.checked = !input.checked; });
-        row.append(input, text); group.append(row);
+        const sequence = document.createElement('span'); sequence.className = 'provider-sequence'; sequence.textContent = `${modelIndex + 1}.`;
+        row.append(sequence, text, toggle); models.append(row);
       }
       fragment.append(group);
     }
@@ -304,14 +353,15 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
   });
   function renderProviders() {
     const fragment = document.createDocumentFragment();
-    for (const provider of providerData.providers || []) {
+    for (const [providerIndex, provider] of (providerData.providers || []).entries()) {
       const row = document.createElement('li'); row.className = 'provider-list-row'; row.dataset.providerId = provider.id;
       const details = document.createElement('div'); details.className = 'provider-list-details';
       const name = document.createElement('button'); name.type = 'button'; name.className = 'provider-list-name'; name.textContent = provider.name || provider.id;
       const id = document.createElement('code'); id.textContent = provider.id; id.dir = 'ltr';
       const meta = document.createElement('p'); meta.className = 'note';
       i18n.text(meta, () => `${i18n.t('Model')}: ${provider.models?.length || 0}${provider.editable ? '' : i18n.t(' — kiểu cấu hình khác')}`);
-      details.append(name, id, meta);
+      const sequence = document.createElement('span'); sequence.className = 'provider-sequence'; sequence.textContent = `${providerIndex + 1}.`;
+      details.append(sequence, name, id, meta);
       const edit = document.createElement('button'); edit.type = 'button'; i18n.text(edit, 'Sửa'); i18n.attr(edit, 'aria-label', () => `${i18n.t('Sửa')} ${provider.name || provider.id}`);
       const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'provider-list-delete'; i18n.text(remove, 'Xóa nhà cung cấp'); i18n.attr(remove, 'aria-label', () => `${i18n.t('Xóa nhà cung cấp')} · ${provider.name || provider.id}`);
       for (const button of [name, edit]) {
@@ -360,6 +410,13 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
   document.querySelector('#provider-new').addEventListener('click', () => openProviderEditor());
   document.querySelector('#provider-editor-close').addEventListener('click', closeProviderEditor);
   providerEditor.addEventListener('cancel', event => { event.preventDefault(); closeProviderEditor(); });
+  let editorOutside = false;
+  const outsideEditor = event => {
+    const rect = providerEditor.getBoundingClientRect();
+    return event.target === providerEditor && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom);
+  };
+  providerEditor.addEventListener('pointerdown', event => { editorOutside = outsideEditor(event); });
+  providerEditor.addEventListener('click', event => { if (editorOutside && outsideEditor(event) && !providerSubmitting && providerPendingId === undefined) closeProviderEditor(); editorOutside = false; });
   function modelCount() {
     const rows = modelRows(), count = rows.filter(row => row.querySelector('[data-model-selected]').checked).length;
     i18n.text(document.querySelector('#provider-model-count'), () => (`Đã chọn ${count} / ${rows.length} model.`));
@@ -504,7 +561,7 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
   }
   document.querySelector('#provider-scan-models').addEventListener('click', scanModels);
   window.addEventListener('pagehide', () => { clearTimeout(toastTimer); clearTimeout(autoScanTimer); clearTimeout(timer); notice.hidden = true; });
-  window.addEventListener('beforeunload', event => { if (providersPage && (providerSubmitting || providerPendingId !== undefined)) { event.preventDefault(); event.returnValue = ''; } });
+  window.addEventListener('beforeunload', event => { if (providersPage && (providerSubmitting || providerImportPending || watchingJob || providerLocked || providerPendingId !== undefined)) { event.preventDefault(); event.returnValue = ''; } });
   window.addEventListener('pageshow', event => { if (event.persisted) refreshWithRetry(); });
   providerForm.addEventListener('submit', async event => {
     event.preventDefault(); if (!providerEditor.open || busy || !available || !providerData?.supported || providerLocked) return;
@@ -528,6 +585,97 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
       watchingJob = true; providerPendingId = id; providerPendingVisibility = visibility; message(data.message);
     } catch (error) { message(error.message); }
     finally { busy = false; providerSubmitting = false; refreshWithRetry(); }
+  });
+  function validateProviderBackup(backup, importing = true) {
+    const fail = () => { throw new Error('Invalid provider backup: check format, bounded fields, unique IDs and HTTP consent. Existing provider IDs cannot be imported.'); };
+    const object = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => keys.includes(key));
+    const text = (value, maximum) => typeof value === 'string' && value.length > 0 && value.length <= maximum && value.trim() === value && !/[\x00-\x1f\x7f]|\{(?:env|file):|\$\{/.test(value);
+    if (!object(backup, ['format', 'version', 'providers']) || backup.format !== backupFormat || backup.version !== 1 || !Array.isArray(backup.providers) || importing && !backup.providers.length || backup.providers.length > 100) fail();
+    const ids = new Set(importing ? (providerData?.providers || []).map(provider => provider.id) : []);
+    let models = 0, keys = 0, http = 0;
+    for (const provider of backup.providers) {
+      if (!object(provider, ['id', 'name', 'baseURL', 'models', 'allowHttp', 'apiKey']) || !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(provider.id) || typeof provider.id !== 'string' || ids.has(provider.id) || !text(provider.name, 128) || !text(provider.baseURL, 2048) || typeof provider.allowHttp !== 'boolean') fail();
+      ids.add(provider.id);
+      let url;
+      try { url = new URL(provider.baseURL); } catch { fail(); }
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || /[{}]/.test(provider.baseURL) || url.protocol === 'http:' && !provider.allowHttp) fail();
+      if (url.protocol === 'http:') http++;
+      if (provider.apiKey !== undefined) {
+        if (!text(provider.apiKey, 4096) || !/^[\x21-\x7e]+$/.test(provider.apiKey)) fail();
+        keys++;
+      }
+      if (!Array.isArray(provider.models) || !provider.models.length || provider.models.length > maximumProviderModels) fail();
+      const modelIDs = new Set();
+      for (const model of provider.models) {
+        if (!object(model, ['id', 'name']) || !text(model.id, 128) || model.name !== undefined && model.name !== '' && !text(model.name, 128) || modelIDs.has(model.id)) fail();
+        modelIDs.add(model.id);
+      }
+      models += provider.models.length;
+      if (models > maximumProviderModels) fail();
+    }
+    return `${backup.providers.length} providers, ${models} models, ${keys} API keys, ${http} HTTP endpoints`;
+  }
+  function clearProviderImport() {
+    providerImportBackup = undefined; providerImportFile.value = '';
+    document.querySelector('#provider-import-preview').textContent = 'Select a backup to preview provider, model and API key counts. Secret values are never displayed.';
+    lockProvider();
+  }
+  document.querySelector('#provider-import-clear').addEventListener('click', clearProviderImport);
+  providerImportFile.addEventListener('change', async () => {
+    if (busy || !available || providerLocked || watchingJob || providerImportPending) return;
+    providerImportBackup = undefined;
+    const file = providerImportFile.files[0];
+    if (!file) { clearProviderImport(); return; }
+    busy = true; lockProvider();
+    try {
+      if (!/\.json$/i.test(file.name) || !file.size || file.size > maximumBackupBytes) throw new Error('Select a non-empty JSON file no larger than 2 MB.');
+      const backup = JSON.parse(await file.text());
+      const summary = validateProviderBackup(backup);
+      providerImportBackup = backup;
+      document.querySelector('#provider-import-preview').textContent = `${summary}. Ready to import as new providers. API key values are not shown.`;
+    } catch {
+      providerImportFile.value = '';
+      document.querySelector('#provider-import-preview').textContent = 'Invalid JSON backup, existing/duplicate IDs, or limits exceeded (2 MB, 100 providers, 2000 models total). No data imported.';
+    } finally { busy = false; lockProvider(); }
+  });
+  document.querySelector('#provider-export').addEventListener('click', async () => {
+    if (busy || !available || providerLocked || watchingJob || providerImportPending || !providerData?.supported) return;
+    const includeSecrets = document.querySelector('#provider-export-secrets').checked;
+    if (includeSecrets && !confirm('Export API keys as plaintext secrets in the JSON file? Anyone with this file can read and use the keys. Store it securely and never share it publicly.')) return;
+    busy = true; lockProvider();
+    try {
+      const { backup } = await call('provider-export', { includeSecrets });
+      validateProviderBackup(backup, false);
+      if (!includeSecrets && backup.providers.some(provider => Object.hasOwn(provider, 'apiKey'))) throw new Error('Unexpected secrets in export.');
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      if (blob.size > maximumBackupBytes) throw new Error('Export exceeds the 2 MB backup limit.');
+      const url = URL.createObjectURL(blob), link = document.createElement('a');
+      try {
+        link.href = url; link.download = `opencode-providers-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.append(link); link.click();
+      } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+      message('Provider JSON download started.');
+    } catch { message('Unable to export provider backup. No backup data was displayed.'); }
+    finally { document.querySelector('#provider-export-secrets').checked = false; busy = false; lockProvider(); }
+  });
+  document.querySelector('#provider-import').addEventListener('click', async () => {
+    if (busy || !available || providerLocked || watchingJob || providerImportPending || !providerData?.supported || !providerImportBackup) return;
+    busy = true; providerSubmitting = true; lockProvider();
+    try {
+      await refresh();
+      if (!available || providerLocked || !providerData?.supported) throw new Error('Providers unavailable.');
+      const summary = validateProviderBackup(providerImportBackup);
+      if (!confirm(`Import this file: ${summary}?\n\nAPI keys in JSON are plaintext secrets. HTTP endpoints may send keys unencrypted. Existing IDs will not be overwritten.\n\nI have saved my work and acknowledge reloading OpenCode configuration; pending approval requests may be canceled.`)) return;
+      // HTTP consent is granted by the fresh confirmation above, not by the file alone.
+      const providers = providerImportBackup.providers.map(provider => ({ ...provider, allowHttp: new URL(provider.baseURL).protocol === 'http:' }));
+      const data = await call('provider-import', { revision: providerData.revision, acknowledge: true, providers });
+      watchingJob = true; providerImportPending = true;
+      document.querySelector('#provider-import-status').textContent = 'Import running. Waiting for the providers job and OpenCode configuration reload.';
+      clearProviderImport(); message(data.message || 'Provider import started.');
+    } catch {
+      clearProviderImport();
+      document.querySelector('#provider-import-status').textContent = 'Import was not confirmed. Checking server job status; do not retry until the current operation is resolved.';
+    } finally { busy = false; providerSubmitting = false; lockProvider(); refreshWithRetry(); }
   });
   async function refresh() { if (blacklistPage) return refreshBlacklist(); draw(await call(nativePage ? 'opencode-status' : providersPage ? 'providers-status' : 'status')); }
   for (const [selector, operation] of [['#check-update', 'check'], ['#native-check', 'opencode-check']]) document.querySelector(selector).addEventListener('click', async event => {

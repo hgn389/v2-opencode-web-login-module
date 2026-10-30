@@ -51,6 +51,13 @@ import { i18n } from '/login/i18n-client.js';
     select(id, title);
     dialog.append(header, frame); document.body.append(dialog);
     dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
+    let outside = false;
+    const isOutside = event => {
+      const rect = dialog.getBoundingClientRect();
+      return event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom);
+    };
+    dialog.addEventListener('pointerdown', event => { outside = isOutside(event); });
+    dialog.addEventListener('click', event => { if (outside && isOutside(event)) close(); outside = false; });
     dialog.showModal(); button.focus();
   }
   function menu(className) {

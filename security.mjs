@@ -66,6 +66,21 @@ export class SecurityStore {
     return this.db.prepare('DELETE FROM login_ips WHERE ip = ? AND blocked = 1 AND updated = ?').run(ip, updated).changes > 0;
   }
 
+  unblockBatch(entries) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const remove = this.db.prepare('DELETE FROM login_ips WHERE ip = ? AND blocked = 1 AND updated = ?');
+      for (const { ip, updated } of entries) {
+        if (remove.run(ip, updated).changes !== 1) {
+          this.db.exec('ROLLBACK');
+          return false;
+        }
+      }
+      this.db.exec('COMMIT');
+      return entries.length;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
   fail(ip) {
     const row = this.db.prepare(`INSERT INTO login_ips(ip, failures, blocked, updated) VALUES (?, 1, 0, ?)
       ON CONFLICT(ip) DO UPDATE SET failures = MIN(failures + 1, 10),

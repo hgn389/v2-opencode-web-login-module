@@ -104,11 +104,135 @@ async function fixture(t) {
   const request = (path, options = {}) => fetch(origin + '/web-login/' + path, {
     ...options, headers: { cookie, 'x-opencode-login': '1', ...options.headers },
   });
-  const post = (csrf, fields, headers = {}) => request('api/blacklist-unblock', {
+  const post = (csrf, fields, headers = {}, operation = 'blacklist-unblock') => request('api/' + operation, {
     method: 'POST', headers: { origin, 'content-type': 'application/json', 'x-web-login-csrf': csrf, ...headers }, body: JSON.stringify(fields),
   });
-  return { origin, store, session, request, post, checks, authorization, revokeCredential: () => { authorized = false; } };
+  const batch = (csrf, fields, headers = {}) => post(csrf, fields, headers, 'blacklist-unblock-batch');
+  return { origin, store, session, request, post, batch, checks, authorization, revokeCredential: () => { authorized = false; } };
 }
+
+test('SecurityStore batch unblock rolls back stale, missing and non-blocked rows and persists success', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'blacklist-batch-'));
+  const database = join(directory, 'security.sqlite');
+  let store = new SecurityStore(database);
+  const first = { ip: '198.51.100.10', updated: 1000 };
+  const second = { ip: '2001:db8::20', updated: 2000 };
+  try {
+    seed(store, first.ip, first.updated);
+    seed(store, second.ip, second.updated);
+    seed(store, '198.51.100.30', 3000, 0);
+    for (const conflict of [{ ...second, updated: 1999 }, { ip: '198.51.100.99', updated: 1000 }, { ip: '198.51.100.30', updated: 3000 }]) {
+      assert.equal(store.unblockBatch([first, conflict]), false);
+      assert.equal(store.state(first.ip).blocked, 1, 'The earlier deletion is rolled back');
+      assert.equal(store.blacklist().total, 2);
+    }
+    store.close();
+    store = new SecurityStore(database);
+    assert.equal(store.blacklist().total, 2, 'Rollback persists across reopening');
+    store.db.exec("CREATE TRIGGER fail_batch_delete BEFORE DELETE ON login_ips WHEN OLD.ip = '2001:db8::20' BEGIN SELECT RAISE(ABORT, 'simulated storage failure'); END");
+    assert.throws(() => store.unblockBatch([first, second]), /simulated storage failure/);
+    assert.equal(store.state(first.ip).blocked, 1, 'Storage errors roll back earlier deletions too');
+    store.db.exec('DROP TRIGGER fail_batch_delete');
+    assert.equal(store.unblockBatch([first, second]), 2);
+    store.close();
+    store = new SecurityStore(database);
+    assert.equal(store.blacklist().total, 0);
+    for (const { ip } of [first, second]) assert.deepEqual(store.state(ip), { failures: 0, blocked: 0 });
+    assert.equal(store.state('198.51.100.30').failures, 3);
+    assert.equal(store.fail(first.ip).failures, 1);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('batch unblock validates the complete payload and atomically removes at most 50 blocks locally', async t => {
+  const f = await fixture(t);
+  const first = { ip: '198.51.100.10', updated: 1000 };
+  const second = { ip: '2001:db8::20', updated: 2000 };
+  seed(f.store, first.ip, first.updated);
+  seed(f.store, second.ip, second.updated);
+  const { csrf } = await (await f.request('api/blacklist-status')).json();
+  const invalid = [null, [], {}, { entries: [] }, { entries: {} }, { entries: [first], extra: true },
+    { entries: [first, first] }, { entries: [second, { ...second, ip: '2001:0db8:0:0:0:0:0:20' }] },
+    { entries: Array.from({ length: 51 }, (_, i) => ({ ip: `192.0.2.${i + 1}`, updated: 1000 })) }];
+  for (const entry of [null, [], {}, { ip: first.ip }, { updated: 1000 }, { ...first, extra: true },
+    ...['bad', '198.51.100.999', '127.0.0.1/8', 'fe80::1%eth0', 123, ' 192.0.2.1'].map(ip => ({ ...first, ip })),
+    ...[null, '1000', -1, 1.5, Number.MAX_SAFE_INTEGER + 1].map(updated => ({ ...first, updated }))]) invalid.push({ entries: [first, entry] });
+  for (const fields of invalid) {
+    assert.equal((await f.batch(csrf, fields)).status, 400, JSON.stringify(fields));
+    assert.equal(f.store.blacklist().total, 2);
+  }
+  assert.equal((await f.batch(csrf, { entries: [first, { ...second, updated: 1999 }] })).status, 409);
+  assert.equal(f.store.state(first.ip).blocked, 1);
+  const before = f.checks.length;
+  const logs = [];
+  t.mock.method(console, 'log', value => logs.push(JSON.parse(value)));
+  const response = await f.batch(csrf, { entries: [first, second] });
+  assert.equal(response.status, 200, 'No admin socket is configured');
+  assert.deepEqual(await response.json(), { removed: 2 });
+  assert.deepEqual(logs, [{ event: 'ip_unblocked_batch', actor: '127.0.0.1', count: 2 }], 'Audit logs contain only the actor and count, not submitted IPs or credentials');
+  assert.deepEqual(f.checks.slice(before), [{ path: '/api/info', authorization: f.authorization }]);
+  assert.equal((await f.batch(csrf, { entries: [first, second] })).status, 409);
+  const entries = Array.from({ length: 50 }, (_, i) => ({ ip: `192.0.2.${i + 1}`, updated: 3000 + i }));
+  for (const entry of entries) seed(f.store, entry.ip, entry.updated);
+  const full = await f.batch(csrf, { entries });
+  assert.equal(full.status, 200);
+  assert.deepEqual(await full.json(), { removed: 50 });
+  assert.equal(f.store.blacklist().total, 0);
+});
+
+test('batch unblock requires authentication and session-bound CSRF before backend revalidation', async t => {
+  const f = await fixture(t);
+  const entry = { ip: '198.51.100.10', updated: 1000 };
+  seed(f.store, entry.ip, entry.updated);
+  const { csrf } = await (await f.request('api/blacklist-status')).json();
+  const fields = { entries: [entry] };
+  const before = f.checks.length;
+  assert.equal((await f.batch(csrf, fields, { cookie: '' })).status, 401);
+  assert.equal((await f.request('api/blacklist-unblock-batch')).status, 403);
+  for (const headers of [{ 'x-web-login-csrf': '' }, { 'x-web-login-csrf': 'forged' },
+    { origin: '' }, { origin: 'https://attacker.invalid' }, { 'sec-fetch-site': 'cross-site' },
+    { 'x-opencode-login': '' }, { 'content-type': 'text/plain' },
+    { cookie: `opencode_login_${new URL(f.origin).port}=${f.store.createSession('another-native-token', f.origin)}` }]) {
+    assert.equal((await f.batch(csrf, fields, headers)).status, 403);
+  }
+  assert.equal(f.checks.length, before);
+  f.revokeCredential();
+  const response = await f.batch(csrf, fields);
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).loginRequired, true);
+  assert.equal(f.store.session(f.session, f.origin, false), undefined);
+  assert.equal(f.store.state(entry.ip).blocked, 1);
+  assert.equal(f.checks.length, before + 1);
+});
+
+test('batch unblock requires a fresh CAPTCHA login after five failures', async t => {
+  const f = await fixture(t);
+  const entry = { ip: '198.51.100.10', updated: 1000 };
+  seed(f.store, entry.ip, entry.updated);
+  const { csrf } = await (await f.request('api/blacklist-status')).json();
+  seed(f.store, '127.0.0.1', Date.now(), 0, 5);
+  const before = f.checks.length;
+  const response = await f.batch(csrf, { entries: [entry] });
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).loginRequired, true);
+  assert.equal(f.store.session(f.session, f.origin, false), undefined);
+  assert.equal(f.store.state(entry.ip).blocked, 1);
+  assert.equal(f.checks.length, before);
+});
+
+test('batch unblock refuses requests from a blocked actor', async t => {
+  const f = await fixture(t);
+  const entry = { ip: '198.51.100.10', updated: 1000 };
+  seed(f.store, entry.ip, entry.updated);
+  const { csrf } = await (await f.request('api/blacklist-status')).json();
+  seed(f.store, '127.0.0.1', Date.now());
+  const before = f.checks.length;
+  assert.equal((await f.batch(csrf, { entries: [entry] })).status, 403);
+  assert.equal(f.store.state(entry.ip).blocked, 1);
+  assert.equal(f.checks.length, before);
+});
 
 test('blacklist HTTP API authenticates, validates queries and protects unblock with origin and session-bound CSRF', async t => {
   const f = await fixture(t);

@@ -29,6 +29,21 @@ export function validateCustomProvider(value) {
   return { id: value.id, name: value.name, ...savedConnection, models };
 }
 
+function validateProviderImport(providers) {
+  if (!Array.isArray(providers) || providers.length < 1 || providers.length > 100) throw providerFailure(422, 'Import requires 1 to 100 providers.');
+  const ids = new Set(); let models = 0;
+  return providers.map(value => {
+    if (!record(value) || Object.keys(value).some(key => !['id', 'name', 'baseURL', 'models', 'allowHttp', 'apiKey'].includes(key)) || typeof value.allowHttp !== 'boolean' || value.apiKey !== undefined && typeof value.apiKey !== 'string') throw providerFailure(422, 'Import accepts only id, name, baseURL, models, boolean allowHttp and optional apiKey.');
+    if (!Array.isArray(value.models) || value.models.some(model => !record(model) || Object.keys(model).some(key => !['id', 'name'].includes(key)))) throw providerFailure(422, 'Imported models accept only id and name.');
+    const { id, name, baseURL, models: validatedModels, allowHttp, apiKey } = validateCustomProvider(value);
+    models += validatedModels.length;
+    if (ids.has(id)) throw providerFailure(422, 'Duplicate imported provider ID.');
+    if (models > 2000) throw providerFailure(422, 'Import is limited to 2000 models.');
+    ids.add(id);
+    return { id, name, baseURL, models: validatedModels, allowHttp, ...(apiKey ? { apiKey } : {}) };
+  });
+}
+
 function providerDocument(text) {
   if (Buffer.byteLength(text) > 1024 * 1024) throw providerFailure(422, 'Tệp cấu hình quá lớn để sửa qua web.');
   const errors = [], options = { allowTrailingComma: true };
@@ -63,20 +78,21 @@ function ownedProviderPath(path, directory = false, privateMode = false) {
   return info;
 }
 
-function providerRead(path) {
+function providerRead(path, privateMode = false) {
   if (!lstatSync(path, { throwIfNoEntry: false })) return;
-  ownedProviderPath(path);
+  ownedProviderPath(path, false, privateMode);
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const info = fstatSync(fd);
-    if (!info.isFile() || info.uid !== process.getuid() || info.nlink !== 1 || info.size > 1024 * 1024) throw providerFailure(422, 'Tệp cấu hình không an toàn hoặc quá lớn.');
+    if (!info.isFile() || info.uid !== process.getuid() || info.nlink !== 1 || info.mode & (privateMode ? 0o077 : 0o022) || info.size > 1024 * 1024) throw providerFailure(422, 'Tệp cấu hình không an toàn hoặc quá lớn.');
     return { content: readFileSync(fd), mode: info.mode & 0o777 };
   } finally { closeSync(fd); }
 }
 
-function providerSource(context) {
+function providerSource(context, readOnly = false) {
   for (const field of ['directory', 'backupDirectory']) if (!isAbsolute(context[field] || '') || /[\x00-\x1f\x7f{}]/.test(context[field])) throw providerFailure(422, 'Đường dẫn cấu hình không hợp lệ.');
-  mkdirSync(context.directory, { recursive: true, mode: 0o700 }); ownedProviderPath(context.directory, true);
+  if (!readOnly) mkdirSync(context.directory, { recursive: true, mode: 0o700 });
+  ownedProviderPath(context.directory, true);
   const file = context.file || ['opencode.jsonc', 'opencode.json'].map(name => join(context.directory, name)).find(path => lstatSync(path, { throwIfNoEntry: false })) || join(context.directory, 'opencode.json');
   if (dirname(file) !== context.directory) throw providerFailure(422, 'Đường dẫn cấu hình không hợp lệ.');
   const previous = providerRead(file), text = previous?.content.toString('utf8') || '{}\n', data = providerDocument(text);
@@ -84,7 +100,7 @@ function providerSource(context) {
 }
 
 export function providerFileOperation(context, request) {
-  if (request.action === 'read') return providerFileUnlocked(context, request);
+  if (['read', 'export'].includes(request.action)) return providerFileUnlocked(context, request);
   if (!isAbsolute(context.backupDirectory || '') || /[\x00-\x1f\x7f{}]/.test(context.backupDirectory)) throw providerFailure(422, 'Đường dẫn sao lưu không hợp lệ.');
   mkdirSync(context.backupDirectory, { recursive: true, mode: 0o700 }); ownedProviderPath(context.backupDirectory, true, true);
   const unlock = nativeOperationLock(context.backupDirectory);
@@ -93,7 +109,7 @@ export function providerFileOperation(context, request) {
 }
 
 function providerFileUnlocked(context, request) {
-  const { file, previous, text, data } = providerSource(context);
+  const { file, previous, text, data } = providerSource(context, request.action === 'export');
   const revision = value => createHash('sha256').update(file + '\0' + value).digest('hex');
   const secretDirectory = join(context.directory, '.web-login-secrets');
   const keyPattern = /^[a-z0-9][a-z0-9_-]{0,79}\.key$/;
@@ -107,6 +123,37 @@ function providerFileUnlocked(context, request) {
     models: Object.entries(provider?.models || {}).slice(0, maximumProviderModels).map(([id, model]) => ({ id, name: typeof model?.name === 'string' ? model.name : id })),
   })) });
   if (request.action === 'read') return summary();
+  if (request.action === 'export') {
+    if (typeof request.includeSecrets !== 'boolean') throw providerFailure(422, 'includeSecrets must be boolean.');
+    const entries = Object.entries(data.providers || {});
+    if (entries.length > 100) throw providerFailure(422, 'Export is limited to 100 providers.');
+    const providers = entries.map(([id, provider]) => {
+      if (!record(provider) || provider.package !== providerPackage || !record(provider.models)) throw providerFailure(422, 'Export supports only configured OpenAI-compatible providers.');
+      if (request.includeSecrets && (provider.env?.length || Object.keys(provider.headers || {}).length)) throw providerFailure(422, 'Cannot export environment or custom-header credentials. Remove these unsupported references or export without API keys.');
+      let apiKey;
+      if (request.includeSecrets && provider.settings?.apiKey !== undefined && provider.settings.apiKey !== '') {
+        const reference = provider.settings.apiKey;
+        if (typeof reference === 'string' && reference.startsWith('{file:') && reference.endsWith('}')) {
+          const key = reference.slice(6, -1);
+          if (dirname(key) !== secretDirectory || !keyPattern.test(key.slice(secretDirectory.length + 1))) throw providerFailure(422, 'Cannot export an API key from a file outside the module-managed secret directory.');
+          try {
+            ownedProviderPath(secretDirectory, true, true); ownedProviderPath(key, false, true);
+            apiKey = providerRead(key, true).content.toString('utf8');
+          } catch { throw providerFailure(422, 'Cannot safely read the module-managed API key.'); }
+        } else {
+          if (typeof reference !== 'string' || /\{(?:env|file):|\$\{/.test(reference)) throw providerFailure(422, 'Cannot export external or environment API key references.');
+          apiKey = reference;
+        }
+      }
+      return { id, name: provider.name || id, baseURL: provider.settings?.baseURL, allowHttp: provider.settings?.baseURL?.startsWith('http:') === true,
+        models: Object.entries(provider.models).map(([id, model]) => ({ id, name: model?.name || id })), ...(apiKey ? { apiKey } : {}) };
+    });
+    const validated = providers.length ? validateProviderImport(providers) : [];
+    if (revision(providerSource(context, true).text) !== revision(text)) throw providerFailure(409, 'Configuration changed during export.');
+    const result = { status: 200, backup: { format: 'opencode-web-login-providers', version: 1, providers: validated } };
+    if (Buffer.byteLength(JSON.stringify(result)) > 2 * 1024 * 1024) throw providerFailure(422, 'Export is limited to 2 MiB.');
+    return result;
+  }
   mkdirSync(context.backupDirectory, { recursive: true, mode: 0o700 }); ownedProviderPath(context.backupDirectory, true, true);
   if (request.action === 'restore') {
     if (!/^snapshot-[A-Za-z0-9]+$/.test(request.backup || '')) throw providerFailure(422, 'Bản sao lưu cấu hình không hợp lệ.');
@@ -120,10 +167,15 @@ function providerFileUnlocked(context, request) {
     }
     return { status: 200 };
   }
-  if (!['save', 'remove'].includes(request.action) || request.revision !== revision(text)) throw providerFailure(409, 'Cấu hình đã thay đổi. Vui lòng tải lại danh sách trước khi lưu.');
-  const input = request.action === 'save' ? validateCustomProvider(request.provider) : { id: request.id };
-  if (!validProviderID(input.id)) throw providerFailure(422, 'ID nhà cung cấp không hợp lệ.');
-  const existing = data.providers?.[input.id];
+   if (!['save', 'remove', 'import'].includes(request.action) || request.revision !== revision(text)) throw providerFailure(409, 'Cấu hình đã thay đổi. Vui lòng tải lại danh sách trước khi lưu.');
+   const imported = request.action === 'import' ? validateProviderImport(request.providers) : undefined;
+   if (imported) {
+     if (Object.keys(data.providers || {}).length + imported.length > 100 || Object.values(data.providers || {}).reduce((total, provider) => total + Object.keys(provider?.models || {}).length, 0) + imported.reduce((total, provider) => total + provider.models.length, 0) > 2000) throw providerFailure(422, 'Configuration is limited to 100 providers and 2000 models after import.');
+     if (imported.some(provider => Object.hasOwn(data.providers || {}, provider.id))) throw providerFailure(409, 'An imported provider ID already exists. No providers were imported.');
+   }
+   const input = request.action === 'save' ? validateCustomProvider(request.provider) : { id: request.id };
+   if (!imported && !validProviderID(input.id)) throw providerFailure(422, 'ID nhà cung cấp không hợp lệ.');
+  const existing = imported ? undefined : data.providers?.[input.id];
   if (existing && existing.package !== providerPackage) throw providerFailure(422, 'Nhà cung cấp này dùng kiểu cấu hình khác; không sửa qua biểu mẫu OpenAI-compatible.');
   if (request.action === 'save' && Object.keys(existing?.models || {}).length > maximumProviderModels) throw providerFailure(422, `Nhà cung cấp có hơn ${maximumProviderModels} model; cần sửa tệp để tránh bỏ sót model khi dùng biểu mẫu.`);
   if (request.action === 'remove' && !existing) throw providerFailure(404, 'Không tìm thấy nhà cung cấp trong tệp cấu hình này.');
@@ -132,11 +184,14 @@ function providerFileUnlocked(context, request) {
   const endpointChanged = request.action === 'save' && existing && existing.settings?.baseURL?.replace(/\/$/, '') !== input.baseURL;
   if (endpointChanged && (existing.settings?.apiKey || existing.env?.length || Object.keys(existing.headers || {}).length) && !input.apiKey && !input.clearKey) throw providerFailure(422, 'Khi đổi Base URL, hãy nhập lại hoặc xóa API key để tránh gửi khóa cũ tới địa chỉ mới.');
   const newKey = request.action === 'save' && input.apiKey ? join(secretDirectory, input.id + '-' + randomBytes(8).toString('hex') + '.key') : undefined;
+  const newKeys = new Map(imported ? imported.filter(provider => provider.apiKey).map(provider => [provider.id, { file: join(secretDirectory, provider.id + '-' + randomBytes(8).toString('hex') + '.key'), value: provider.apiKey }]) : newKey ? [[input.id, { file: newKey, value: input.apiKey }]] : []);
   const reference = existing?.settings?.apiKey;
   const previousKey = typeof reference === 'string' && reference.startsWith('{file:') && reference.endsWith('}') ? reference.slice(6, -1) : undefined;
   const relatedKey = previousKey && dirname(previousKey) === secretDirectory && keyPattern.test(previousKey.slice(secretDirectory.length + 1)) ? previousKey : undefined;
   const changes = [];
-  if (request.action === 'remove') changes.push([['providers', input.id], undefined]);
+   if (imported) {
+     for (const provider of imported) changes.push([['providers', provider.id], { name: provider.name, package: providerPackage, settings: { baseURL: provider.baseURL, ...(newKeys.has(provider.id) ? { apiKey: `{file:${newKeys.get(provider.id).file}}` } : {}) }, models: Object.fromEntries(provider.models.map(model => [model.id, { name: model.name }])) }]);
+   } else if (request.action === 'remove') changes.push([['providers', input.id], undefined]);
   else {
     if (!existing) changes.push([['providers', input.id], { name: input.name, package: providerPackage, settings: { baseURL: input.baseURL }, models: {} }]);
     changes.push([['providers', input.id, 'name'], input.name], [['providers', input.id, 'settings', 'baseURL'], input.baseURL]);
@@ -157,7 +212,7 @@ function providerFileUnlocked(context, request) {
   const savedKey = relatedKey ? providerRead(relatedKey) : undefined;
   const directory = mkdtempSync(join(context.backupDirectory, 'snapshot-'));
   if (savedKey) writeFileSync(join(directory, 'previous-key'), savedKey.content, { mode: 0o600, flag: 'wx' });
-  const entries = [{ file, before: previous }, ...(newKey ? [{ file: newKey }] : [])].map((entry, index) => {
+  const entries = [{ file, before: previous }, ...[...newKeys.values()].map(key => ({ file: key.file }))].map((entry, index) => {
     if (entry.before) { writeFileSync(join(directory, String(index)), entry.before.content, { mode: 0o600, flag: 'wx' }); return { file: entry.file, exists: true, saved: String(index), mode: entry.before.mode }; }
     return { file: entry.file, exists: false };
   });
@@ -171,7 +226,7 @@ function providerFileUnlocked(context, request) {
   if (revision(providerRead(file)?.content.toString('utf8') || '{}\n') !== request.revision) throw providerFailure(409, 'Cấu hình vừa thay đổi ở nơi khác. Chưa ghi thay đổi mới.');
   try {
     // A new immutable file keeps a changed endpoint from briefly reading the previous provider's key.
-    if (newKey) writeFileSync(newKey, input.apiKey, { mode: 0o600, flag: 'wx' });
+    for (const key of newKeys.values()) writeFileSync(key.file, key.value, { mode: 0o600, flag: 'wx' });
     // Retain removed key files in the private directory: another manually configured provider may reference one.
     atomic(file, updated, 0o600);
   } catch {
@@ -564,31 +619,42 @@ export function createAdminController(config, dependencies = {}) {
       return { ...status(), providers: result };
     } catch (error) { return { ...status(), providers: { supported: false, reason: error.publicMessage || 'Chưa đọc được cấu hình nhà cung cấp. Kiểm tra quyền tệp và dịch vụ OpenCode.' } }; }
   }
-  async function changeProvider(context, fields, input, remove, credential) {
-    let saved;
+  async function changeProvider(context, fields, input, remove, credential, importing = false) {
+    let saved, dispatched = false;
     try {
       if (!credentialUnchanged(credential)) throw providerFailure(401, 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
       const current = await runProvider(context, { action: 'read' });
       if (current.status !== 200) throw providerFailure(current.status, current.message);
-      if (!remove && !current.providers.some(provider => provider.id === input.id) && await providerExists(input.id)) throw providerFailure(409, 'ID này đã được OpenCode hoặc cấu hình khác sử dụng. Hãy chọn một ID tùy chỉnh mới.');
+      if (importing) {
+        if (current.revision !== fields.revision) throw providerFailure(409, 'Configuration changed before import.');
+        for (const provider of input) {
+          if (current.providers.some(existing => existing.id === provider.id) || await providerExists(provider.id)) throw providerFailure(409, 'An imported provider ID is already in use. No providers were imported.');
+        }
+      } else if (!remove && !current.providers.some(provider => provider.id === input.id) && await providerExists(input.id)) throw providerFailure(409, 'ID này đã được OpenCode hoặc cấu hình khác sử dụng. Hãy chọn một ID tùy chỉnh mới.');
       if (!credentialUnchanged(credential)) throw providerFailure(401, 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
       setJob({ type: 'providers', phase: 'running', started: Date.now(), context, recoveryRequired: true,
         message: 'Đang áp dụng cấu hình provider; cần kiểm tra khôi phục nếu tác vụ bị gián đoạn.' });
-      saved = await runProvider(context, remove ? { action: 'remove', id: input.id, revision: fields.revision } : { action: 'save', provider: input, revision: fields.revision });
+      dispatched = true;
+      saved = await runProvider(context, importing ? { action: 'import', providers: input, revision: fields.revision } : remove ? { action: 'remove', id: input.id, revision: fields.revision } : { action: 'save', provider: input, revision: fields.revision });
       if (saved.status !== 200) throw providerFailure(saved.status, saved.message);
       setJob({ type: 'providers', phase: 'running', started: Date.now(), context, backup: saved.backup, recoveryRequired: true, message: 'Đã lưu tệp riêng; đang tải lại cấu hình và kiểm tra model trong OpenCode.' });
-      await reloadProvider(input.id, input.models || [], remove, input.baseURL);
+      if (importing) {
+        for (const provider of input) await reloadProvider(provider.id, provider.models, false, provider.baseURL);
+      } else await reloadProvider(input.id, input.models || [], remove, input.baseURL);
       setJob({ type: 'providers', phase: 'succeeded', message: remove ? 'Đã xóa nhà cung cấp tùy chỉnh và tải lại cấu hình OpenCode.' : 'Đã lưu nhà cung cấp tùy chỉnh; model đã xuất hiện trong OpenCode. Tải lại giao diện để chọn model.' });
     } catch (error) {
-      let restored = !saved?.backup;
+      let restored = !saved?.backup && (!dispatched || saved !== undefined);
       if (saved?.backup) {
         try {
           const result = await runProvider(context, { action: 'restore', backup: saved.backup });
           restored = result.status === 200;
-          if (restored) await reloadProvider(undefined, [], false);
+          if (restored) {
+            if (importing) for (const provider of input) await reloadProvider(provider.id, [], true);
+            else await reloadProvider(undefined, [], false);
+          }
         } catch { restored = false; }
       }
-      setJob({ type: 'providers', phase: 'failed', context: saved?.backup ? context : undefined, backup: saved?.backup,
+      setJob({ type: 'providers', phase: 'failed', context: saved?.backup || !restored ? context : undefined, backup: saved?.backup,
         recoveryRequired: !restored,
         message: saved?.backup ? restored ? 'Không áp dụng được provider; đã khôi phục cấu hình trước đó.' : 'Không áp dụng được provider; cần kiểm tra cấu hình và bản sao lưu riêng trên máy chủ.' : error.publicMessage || 'Không lưu được nhà cung cấp. Kiểm tra cấu hình và thử lại.' });
     }
@@ -608,9 +674,20 @@ export function createAdminController(config, dependencies = {}) {
       if (operation === 'opencode-status') return nativeStatus();
       if (operation === 'opencode-check') { await Promise.all([checkNative(), checkVersions()]); return nativeStatus(); }
       if (operation === 'providers-status') return providersStatus();
-      if (!['password', 'preferences', 'update', 'opencode-update', 'opencode-install', 'provider-save', 'provider-remove', 'provider-models'].includes(operation)) return { status: 400, message: 'Thao tác không hợp lệ.' };
+      if (!['password', 'preferences', 'update', 'opencode-update', 'opencode-install', 'provider-save', 'provider-remove', 'provider-models', 'provider-import', 'provider-export'].includes(operation)) return { status: 400, message: 'Thao tác không hợp lệ.' };
       const credential = getPassword();
       if (busy()) return { status: 409, message: 'Đang xử lý một tác vụ quản trị. Vui lòng chờ.' };
+      if (operation === 'provider-export') {
+        if (Object.keys(fields).some(key => key !== 'includeSecrets') || typeof fields.includeSecrets !== 'boolean') return { status: 422, message: 'Export requires boolean includeSecrets.' };
+        try {
+          const context = await getProviderContext();
+          if (!credentialUnchanged(credential)) return { status: 401, message: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.' };
+          if (busy()) return { status: 409, message: 'Đang xử lý một tác vụ quản trị. Vui lòng chờ.' };
+          const result = await runProvider(context, { action: 'export', includeSecrets: fields.includeSecrets === true });
+          if (!credentialUnchanged(credential)) return { status: 401, message: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.' };
+          return result;
+        } catch (error) { return { status: error.status || 503, message: error.publicMessage || 'Cannot safely export providers.' }; }
+      }
       if (operation === 'provider-models') {
         if (discovering) return { status: 409, message: 'Đang quét model. Vui lòng chờ.' };
         if (Date.now() >= discoveryUntil) { discoveryUntil = Date.now() + 60000; discoveryAttempts = 0; }
@@ -629,18 +706,19 @@ export function createAdminController(config, dependencies = {}) {
         } catch (error) { return { status: error.status || 503, message: error.publicMessage || 'Không quét được model. Kiểm tra kết nối và cấu hình nhà cung cấp.' }; }
         finally { discovering = false; }
       }
-      if (['provider-save', 'provider-remove'].includes(operation)) {
+      if (['provider-save', 'provider-remove', 'provider-import'].includes(operation)) {
         if (fields.acknowledge !== true || !/^[a-f0-9]{64}$/.test(fields.revision || '')) return { status: 422, message: 'Vui lòng tải lại danh sách và xác nhận đồng ý tải lại cấu hình OpenCode.' };
-        const remove = operation === 'provider-remove'; let input, context;
+        const remove = operation === 'provider-remove', importing = operation === 'provider-import'; let input, context;
         try {
-          input = remove ? { id: fields.id } : validateCustomProvider(fields.provider);
-          if (!validProviderID(input.id)) throw providerFailure(422, 'ID nhà cung cấp không hợp lệ.');
+          if (importing && Object.keys(fields).some(key => !['revision', 'acknowledge', 'providers'].includes(key))) throw providerFailure(422, 'Unexpected import field.');
+          input = importing ? validateProviderImport(fields.providers) : remove ? { id: fields.id } : validateCustomProvider(fields.provider);
+          if (!importing && !validProviderID(input.id)) throw providerFailure(422, 'ID nhà cung cấp không hợp lệ.');
           context = await getProviderContext();
         } catch (error) { return { status: error.status || 503, message: error.publicMessage || 'Chưa xác định được cấu hình OpenCode để lưu provider.' }; }
         if (!credentialUnchanged(credential)) return { status: 401, message: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.' };
         if (busy()) return { status: 409, message: 'Đang xử lý một tác vụ quản trị. Vui lòng chờ.' };
         setJob({ type: 'providers', phase: 'running', started: Date.now(), message: remove ? 'Đang xóa nhà cung cấp và tải lại cấu hình OpenCode.' : 'Đang sao lưu và lưu nhà cung cấp tùy chỉnh.' });
-        setTimeout(() => changeProvider(context, fields, input, remove, credential).catch(() => {}), 100);
+        setTimeout(() => changeProvider(context, { revision: fields.revision }, input, remove, credential, importing).catch(() => {}), 100);
         return { status: 202, message: 'Đã nhận yêu cầu. Trang sẽ theo dõi việc lưu và tải lại cấu hình OpenCode.' };
       }
       if (['opencode-update', 'opencode-install'].includes(operation)) {

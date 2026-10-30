@@ -378,7 +378,7 @@ export function createLoginServer(options = {}) {
       res.end(req.method === 'HEAD' ? undefined : localizeHTML(html, requestLocale(req))); return;
     }
     const operation = url.pathname.slice('/web-login/api/'.length);
-    if (!url.pathname.startsWith('/web-login/api/') || !['status', 'check', 'password', 'preferences', 'update', 'opencode-status', 'opencode-check', 'opencode-update', 'opencode-install', 'providers-status', 'provider-save', 'provider-remove', 'provider-models', 'blacklist-status', 'blacklist-unblock'].includes(operation)) return send(404, { message: 'Không tìm thấy trang.' });
+    if (!url.pathname.startsWith('/web-login/api/') || !['status', 'check', 'password', 'preferences', 'update', 'opencode-status', 'opencode-check', 'opencode-update', 'opencode-install', 'providers-status', 'provider-save', 'provider-remove', 'provider-models', 'provider-import', 'provider-export', 'blacklist-status', 'blacklist-unblock', 'blacklist-unblock-batch'].includes(operation)) return send(404, { message: 'Không tìm thấy trang.' });
     if (!state.allowRequest(ctx.ip, 'admin', 60)) return send(429, { message: 'Quá nhiều yêu cầu. Vui lòng thử lại sau một phút.' });
     if (req.headers['x-opencode-login'] !== '1' || req.headers['sec-fetch-site'] === 'cross-site' || (req.headers.origin && req.headers.origin !== ctx.origin)) return send(403, { message: 'Yêu cầu không hợp lệ.' });
     if (operation === 'blacklist-status') {
@@ -406,14 +406,14 @@ export function createLoginServer(options = {}) {
       state.revoke(cookies(req)[ctx.cookie]);
       return send(401, { message: 'Vui lòng đăng nhập lại và nhập mã xác minh trước khi tiếp tục.', loginRequired: true });
     }
-    if (!config.adminSocket && operation !== 'blacklist-unblock') return send(503, { message: 'Chưa bật dịch vụ quản trị.' });
+    if (!config.adminSocket && !['blacklist-unblock', 'blacklist-unblock-batch'].includes(operation)) return send(503, { message: 'Chưa bật dịch vụ quản trị.' });
     if (!state.begin(ctx.ip)) return send(429, { message: 'Yêu cầu trước đang được xử lý. Vui lòng chờ.' });
     try {
       let size = 0;
       const chunks = [];
       for await (const chunk of req.iterator({ destroyOnReturn: false })) {
         size += chunk.length;
-        if (size > (operation === 'provider-save' ? 2 * 1024 * 1024 : ['provider-remove', 'provider-models'].includes(operation) ? 32768 : 8192)) { req.resume(); return send(413, { message: 'Dữ liệu quá lớn.' }); }
+        if (size > (['provider-save', 'provider-import'].includes(operation) ? 2 * 1024 * 1024 : ['provider-remove', 'provider-models'].includes(operation) ? 32768 : 8192)) { req.resume(); return send(413, { message: 'Dữ liệu quá lớn.' }); }
         chunks.push(chunk);
       }
       let fields;
@@ -429,6 +429,20 @@ export function createLoginServer(options = {}) {
       }
       if (verification.status !== 200) return send(503, { message: 'OpenCode tạm thời không khả dụng. Vui lòng thử lại.' });
       if (!state.session(cookies(req)[ctx.cookie], ctx.origin, false) || state.state(ctx.ip).blocked) return send(401, { message: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', loginRequired: true });
+      if (operation === 'blacklist-unblock-batch') {
+        if (Object.keys(fields).some(key => key !== 'entries') || !Array.isArray(fields.entries) || fields.entries.length < 1 || fields.entries.length > 50) return send(400, { message: 'Invalid blacklist entries.' });
+        const ips = new Set();
+        for (const entry of fields.entries) {
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry) || Object.keys(entry).some(key => !['ip', 'updated'].includes(key)) || typeof entry.ip !== 'string' || !net.isIP(entry.ip) || entry.ip.includes('%') || !Number.isSafeInteger(entry.updated) || entry.updated < 0) return send(400, { message: 'Invalid blacklist entry.' });
+          const ip = normalizeIP(entry.ip);
+          if (ips.has(ip)) return send(400, { message: 'Duplicate blacklist entry.' });
+          ips.add(ip);
+        }
+        const removed = state.unblockBatch(fields.entries);
+        if (removed === false) return send(409, { message: 'A block has changed or was already removed. Refresh the list.' });
+        console.log(JSON.stringify({ event: 'ip_unblocked_batch', actor: ctx.ip, count: removed }));
+        return send(200, { removed });
+      }
       if (operation === 'blacklist-unblock') {
         if (Object.keys(fields).some(key => !['ip', 'updated'].includes(key)) || typeof fields.ip !== 'string' || !net.isIP(fields.ip) || !Number.isSafeInteger(fields.updated) || fields.updated < 0) return send(400, { message: 'Invalid blacklist entry.' });
         const removed = state.unblock(fields.ip, fields.updated);
@@ -437,8 +451,16 @@ export function createLoginServer(options = {}) {
         return send(200, { removed: true });
       }
       const picked = Object.fromEntries(['newPassword', 'confirmPassword', 'automatic', 'channel', 'acknowledge'].filter(key => Object.hasOwn(fields, key)).map(key => [key, fields[key]]));
+      if (operation === 'provider-export') {
+        if (Object.keys(fields).some(key => key !== 'includeSecrets') || typeof fields.includeSecrets !== 'boolean') return send(422, { message: 'Export requires boolean includeSecrets.' });
+        picked.includeSecrets = fields.includeSecrets === true;
+      }
       if (operation === 'opencode-install') picked.version = fields.version;
       if (['provider-save', 'provider-remove', 'provider-models'].includes(operation)) { picked.revision = fields.revision; if (operation === 'provider-remove') picked.id = fields.id; else picked.provider = fields.provider; }
+      if (operation === 'provider-import') {
+        if (Object.keys(fields).some(key => !['revision', 'acknowledge', 'providers'].includes(key))) return send(422, { message: 'Unexpected import field.' });
+        picked.revision = fields.revision; picked.providers = fields.providers;
+      }
       const result = await adminCall(config.adminSocket, operation, picked, { signal: shutdown.signal });
       console.log(JSON.stringify({ event: 'web_admin_request', operation, ip: ctx.ip, status: result.status, at: new Date().toISOString() }));
       if (result.status === 401) {
