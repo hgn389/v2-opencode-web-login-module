@@ -73,11 +73,27 @@ async function fixture(t) {
     headers: { cookie, origin, 'x-opencode-login': '1', 'x-web-login-csrf': csrf, 'content-type': 'application/json', ...headers },
     body: JSON.stringify(fields),
   });
-  return { calls, backendCalls, post, store, session, origin,
+  return { calls, backendCalls, post, store, session, origin, cookie,
     setBackendStatus: value => { backendStatus = value; },
     setExportedProviders: value => { exportedProviders = value; },
   };
 }
+
+test('provider transfer has its own authenticated administration page after blacklist', async t => {
+  const f = await fixture(t);
+  const anonymous = await fetch(f.origin + '/web-login/transfer', { redirect: 'manual' });
+  assert.equal(anonymous.status, 401);
+  const response = await fetch(f.origin + '/web-login/transfer', { headers: { cookie: f.cookie } });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'self'/);
+  const html = await response.text();
+  assert.match(html, /href="\/web-login\/blacklist">IP Blacklist<\/a><a href="\/web-login\/transfer">Import \/ Export JSON/);
+  assert.match(html, /<section id="transfer-page" hidden>[\s\S]*id="provider-backup"/);
+  assert(!html.slice(html.indexOf('<section id="providers-page"'), html.indexOf('<section id="transfer-page"')).includes('id="provider-backup"'));
+  assert.match(html, /id="provider-import-sample"/);
+  const scriptResponse = await fetch(f.origin + '/web-login/settings-hook.js', { headers: { cookie: f.cookie } });
+  assert.match(await scriptResponse.text(), /\['blacklist', 'IP Blacklist'\], \['transfer', 'Import \/ Export JSON'\]/);
+});
 
 test('provider transfer HTTP forwards explicit export secret consent and import keys with exact operation payloads', async t => {
   const f = await fixture(t);

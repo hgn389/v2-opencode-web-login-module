@@ -3,7 +3,7 @@
 A standalone login and security gateway in front of OpenCode. It connects to the OpenCode HTTP API without modifying OpenCode's source files. The systemd installer also enables a separate privileged administration service.
 
 Repository: [hgn389/v2-opencode-web-login-module](https://github.com/hgn389/v2-opencode-web-login-module).
-Current package version: **2.0.1**.
+Current package version: **2.0.2**.
 
 ## Features
 
@@ -147,6 +147,8 @@ After logging in, use the Web Login Module settings entries or these exact gatew
 | `/web-login/updates` | Module update checks, channel and automatic-update preferences |
 | `/web-login/opencode` | Manual OpenCode update or downgrade |
 | `/web-login/providers` | OpenCode v2 custom providers and model visibility |
+| `/web-login/blacklist` | Review blocked sign-in addresses and unblock selected entries |
+| `/web-login/transfer` | Import/export provider JSON and download a sample |
 
 Administration requires the managed systemd installation, an active session accepted by OpenCode, origin/CSRF validation and confirmation for disruptive changes. It does not ask for the current password again. Save work before restarting or updating services. Passwords must be 16 to 128 characters. Standalone/library use does not gain privileged administration automatically.
 
@@ -155,6 +157,10 @@ Module automatic updates are **off by default** and the default channel is stabl
 OpenCode updates remain separate and manual. They use official npm packages `@opencode/cli` (v2) or `opencode-ai` (v1), SHA-512 verification from `registry.npmjs.org` and version discovery from `anomalyco/opencode`. They do not use this module's fork as an OpenCode source. Web updates require a supported root-managed global npm installation. Other official installation methods may need their own terminal upgrade flow. Downgrading can affect database compatibility; keep backups, and do not assume conversations migrate between v1 and v2 databases.
 
 Custom provider discovery sends a Bearer key only to the configured endpoint, does not follow redirects, and limits response size/time and request rate. Private-network discovery and unencrypted HTTP require separate confirmations. Keys are not filled back into the browser. Changing the endpoint requires replacing or clearing the key. Visibility preferences are browser/origin-local and do not delete configured models.
+
+The provider editor supports deleting selected models and switching visibility for selected models in bulk. The visibility list also has a switch for each provider and uses page scrolling rather than a nested scrolling area.
+
+The Import / Export JSON tab follows IP Blacklist. Exports omit API keys unless explicitly included; JSON containing keys is a plaintext secret and must be kept private. Imports add new provider IDs without overwriting existing ones. Download the sample JSON for the expected structure, then replace its example provider and model values before importing.
 
 ## Security And Operations
 
@@ -200,19 +206,19 @@ git diff --check
 The packaging command runs `npm pack --ignore-scripts`, validates the entire archive through the real updater (including exact runtime manifest, package identity and dependency locks), then writes:
 
 ```text
-v2-opencode-web-login-module-2.0.1.tgz
-v2-opencode-web-login-module-2.0.1.tgz.sha256
+v2-opencode-web-login-module-2.0.2.tgz
+v2-opencode-web-login-module-2.0.2.tgz.sha256
 ```
 
-Only runtime files in the updater allowlist may appear. Tests, the local live-check script, handoff notes, packaging scripts, repository metadata and operational state are excluded. The font and its existing license notice remain included. Dependencies are fetched from npm at installation, not bundled from local `node_modules`.
+Only files in the updater allowlist may appear. Tests, packaging scripts, repository metadata and operational state are excluded. The README, font and existing license notices remain included. Dependencies are fetched from npm at installation, not bundled from local `node_modules`.
 
 Publication is a separate, explicitly authorized step: create a matching version tag/release, mark beta versions as prereleases, attach the validated archive and checksum, and verify GitHub reports the exact asset URL, size and `sha256:` digest matching the local checksum. A sidecar alone cannot satisfy the web updater. No commit, push, tag, npm publication or GitHub Release is performed by the packaging command.
 
 After an authorized release exists, users can download both attachments from the repository's release page and verify before installation:
 
 ```sh
-sha256sum --check v2-opencode-web-login-module-2.0.1.tgz.sha256
-sudo npm install -g --ignore-scripts ./v2-opencode-web-login-module-2.0.1.tgz
+sha256sum --check v2-opencode-web-login-module-2.0.2.tgz.sha256
+sudo npm install -g --ignore-scripts ./v2-opencode-web-login-module-2.0.2.tgz
 opencode-web-login --help
 ```
 

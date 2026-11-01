@@ -371,7 +371,7 @@ export function createLoginServer(options = {}) {
       res.writeHead(200, { ...responseHeaders(ctx), 'content-type': url.pathname.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' });
       res.end(req.method === 'HEAD' ? undefined : asset); return;
     }
-    if (['/web-login/password', '/web-login/updates', '/web-login/opencode', '/web-login/providers', '/web-login/blacklist'].includes(url.pathname) && ['GET', 'HEAD'].includes(req.method)) {
+    if (['/web-login/password', '/web-login/updates', '/web-login/opencode', '/web-login/providers', '/web-login/blacklist', '/web-login/transfer'].includes(url.pathname) && ['GET', 'HEAD'].includes(req.method)) {
       res.writeHead(200, { ...responseHeaders(ctx), 'x-frame-options': 'SAMEORIGIN', 'content-type': 'text/html; charset=utf-8',
         'content-security-policy': "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'self'; base-uri 'none'" });
       const html = url.searchParams.get('embedded') === '1' ? adminPage.replace('data-web-login-page', 'data-web-login-page data-embedded') : adminPage;
@@ -462,6 +462,7 @@ export function createLoginServer(options = {}) {
         picked.revision = fields.revision; picked.providers = fields.providers;
       }
       const result = await adminCall(config.adminSocket, operation, picked, { signal: shutdown.signal });
+      if (operation !== 'password' && (!state.session(cookies(req)[ctx.cookie], ctx.origin, false) || state.state(ctx.ip).blocked)) return send(401, { message: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', loginRequired: true });
       console.log(JSON.stringify({ event: 'web_admin_request', operation, ip: ctx.ip, status: result.status, at: new Date().toISOString() }));
       if (result.status === 401) {
         state.revoke(cookies(req)[ctx.cookie]); result.loginRequired = true;

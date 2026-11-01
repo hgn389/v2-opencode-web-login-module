@@ -2,7 +2,7 @@ import { i18n } from '/login/i18n-client.js';
 
 (() => {
   'use strict';
-  const items = [['password', 'Đổi mật khẩu'], ['updates', 'Cập nhật Web Login Module'], ['opencode', 'Update & Downgrade'], ['providers', 'Nhà cung cấp tùy chỉnh'], ['blacklist', 'IP Blacklist']];
+  const items = [['password', 'Đổi mật khẩu'], ['updates', 'Cập nhật Web Login Module'], ['opencode', 'Update & Downgrade'], ['providers', 'Nhà cung cấp tùy chỉnh'], ['blacklist', 'IP Blacklist'], ['transfer', 'Import / Export JSON']];
   let dialog, frame, focusBefore, providerPending = false;
   function close() {
     if (!dialog || providerPending) return;

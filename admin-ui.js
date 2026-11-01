@@ -7,10 +7,11 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
   const notice = document.querySelector('#notice');
   const passwordPage = location.pathname.endsWith('/password');
   const nativePage = location.pathname.endsWith('/opencode');
-  const providersPage = location.pathname.endsWith('/providers');
+   const transferPage = location.pathname.endsWith('/transfer');
+   const providersPage = location.pathname.endsWith('/providers') || transferPage;
   const blacklistPage = location.pathname.endsWith('/blacklist');
-  document.querySelector(blacklistPage ? '#blacklist-page' : passwordPage ? '#password-page' : nativePage ? '#opencode-page' : providersPage ? '#providers-page' : '#updates-page').hidden = false;
-  i18n.text(document.querySelector('title'), () => (blacklistPage ? 'IP Blacklist' : i18n.t(passwordPage ? 'Đổi mật khẩu' : nativePage ? 'Update & Downgrade' : providersPage ? 'Nhà cung cấp tùy chỉnh' : 'Cập nhật Web Login Module')) + ' · OpenCode');
+   document.querySelector(transferPage ? '#transfer-page' : blacklistPage ? '#blacklist-page' : passwordPage ? '#password-page' : nativePage ? '#opencode-page' : providersPage ? '#providers-page' : '#updates-page').hidden = false;
+   i18n.text(document.querySelector('title'), () => (transferPage ? 'Import / Export JSON' : blacklistPage ? 'IP Blacklist' : i18n.t(passwordPage ? 'Đổi mật khẩu' : nativePage ? 'Update & Downgrade' : providersPage ? 'Nhà cung cấp tùy chỉnh' : 'Cập nhật Web Login Module')) + ' · OpenCode');
   document.querySelectorAll('form button, #check-update, #native-check').forEach(button => { button.disabled = true; });
   let csrf, busy = false, available = false, timer, reconnecting = false, watchingJob = false, nativeInfo, nativeLocked;
   let blacklistPageNumber = 1, blacklistTotal = 0, blacklistPageSize = 50, blacklistLoading = false, blacklistRefreshPending = false, blacklistSearchTimer;
@@ -162,8 +163,9 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     if (running || watchingJob) scheduleRefresh();
     if (!available) {
       message(data.message || 'Chưa bật dịch vụ quản trị. Cài lại module bằng bộ cài Linux để sử dụng.');
-      if (providersPage) {
-        i18n.text(document.querySelector('#provider-info'), () => data.message || 'Chưa bật dịch vụ quản trị. Cài lại module bằng bộ cài Linux để sử dụng.');
+       if (providersPage) {
+         i18n.text(document.querySelector('#provider-info'), () => data.message || 'Chưa bật dịch vụ quản trị. Cài lại module bằng bộ cài Linux để sử dụng.');
+         if (transferPage) document.querySelector('#provider-import-status').textContent = data.message || 'Provider administration is unavailable.';
         lockProvider();
       }
       return;
@@ -260,7 +262,14 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     providerForm.elements.remove.disabled = disabled || !selectedProviderId;
     document.querySelector('#provider-add-model').disabled = disabled || modelRows().length >= maximumProviderModels;
     providerForm.elements.apiKey.disabled = locked || busy && !automaticScanning || providerForm.elements.clearKey.checked;
-    for (const row of modelRows()) row.querySelector('[data-model-visible]').disabled ||= !row.querySelector('[data-model-selected]').checked;
+     for (const row of modelRows()) row.querySelector('[data-model-visible]').disabled ||= !row.querySelector('[data-model-selected]').checked;
+     const selectedRows = modelRows().filter(row => row.querySelector('[data-model-selected]').checked);
+     document.querySelector('#provider-delete-models').disabled = disabled || !selectedRows.length;
+     const bulk = document.querySelector('#provider-model-visibility-all');
+     const shown = selectedRows.filter(row => row.querySelector('[data-model-visible]').checked).length;
+     bulk.disabled = disabled || !selectedRows.length;
+     bulk.checked = selectedRows.length > 0 && shown === selectedRows.length;
+     bulk.indeterminate = shown > 0 && shown < selectedRows.length;
     document.querySelector('#provider-visibility-reload').disabled = disabled || providerPendingId !== undefined;
     const noModels = !visibilityModels.querySelector('input');
     document.querySelectorAll('#provider-visibility-controls input, #provider-visibility-controls .visibility-bulk').forEach(control => { control.disabled = disabled || noModels; });
@@ -281,8 +290,18 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
   });
   function syncVisibilityCheckboxes() {
     const preferences = readModelPreferences(localStorage);
-    for (const input of visibilityModels.querySelectorAll('input')) input.checked = modelVisible(preferences, input.dataset.visibilityProvider, input.dataset.visibilityModel);
-  }
+     for (const input of visibilityModels.querySelectorAll('input[data-visibility-model]')) input.checked = modelVisible(preferences, input.dataset.visibilityProvider, input.dataset.visibilityModel);
+     syncVisibilityGroups();
+   }
+   function syncVisibilityGroups() {
+     for (const group of visibilityModels.querySelectorAll('[data-visibility-group]')) {
+       const inputs = [...group.querySelectorAll('input[data-visibility-model]')];
+       const shown = inputs.filter(input => input.checked).length;
+       const toggle = group.querySelector('[data-visibility-all]');
+       toggle.checked = inputs.length > 0 && shown === inputs.length;
+       toggle.indeterminate = shown > 0 && shown < inputs.length;
+     }
+   }
   function renderProviderVisibility(preferred) {
     const providers = (providerData.providers || []).filter(provider => /^[a-z0-9][a-z0-9_-]{0,62}$/.test(provider.id) && provider.models?.length);
     if (providers.length) document.querySelector('#provider-visibility-apply').hidden = false;
@@ -310,7 +329,17 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
       const providerID = document.createElement('code'); providerID.className = 'provider-visibility-provider-id'; providerID.textContent = provider.id; providerID.dir = 'ltr';
       const count = document.createElement('span'); count.className = 'provider-visibility-count'; count.textContent = String(provider.models.length);
       const sequence = document.createElement('span'); sequence.className = 'provider-sequence'; sequence.textContent = `${providerIndex + 1}.`;
-      summary.append(sequence, heading, count, providerID);
+       summary.append(sequence, heading, count, providerID);
+       const bulkLabel = document.createElement('label'); bulkLabel.className = 'model-visibility provider-visibility-toggle';
+       const bulk = document.createElement('input'); bulk.type = 'checkbox'; bulk.setAttribute('role', 'switch'); bulk.dataset.visibilityAll = '';
+       i18n.attr(bulk, 'aria-label', () => `${i18n.t('Hiển thị trong bộ chọn')} · ${provider.name || provider.id} · ${i18n.t('Select All')}`);
+       const bulkTrack = document.createElement('span'); bulkTrack.className = 'model-switch-track'; bulkTrack.setAttribute('aria-hidden', 'true');
+       bulkLabel.append(bulk, bulkTrack); summary.append(bulkLabel);
+       bulkLabel.addEventListener('click', event => event.stopPropagation());
+       bulk.addEventListener('change', () => {
+         if (saveVisibilityChoices([{ providerID: provider.id, choices: provider.models.map(model => ({ modelID: model.id, visible: bulk.checked })) }])) syncVisibilityCheckboxes();
+         else syncVisibilityGroups();
+       });
       const models = document.createElement('div'); models.className = 'provider-visibility-group-models';
       group.append(summary, models);
       for (const [modelIndex, model] of provider.models.entries()) {
@@ -325,13 +354,13 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
         const track = document.createElement('span'); track.className = 'model-switch-track'; track.setAttribute('aria-hidden', 'true');
         toggle.append(input, track);
         i18n.attr(input, 'aria-label', () => `${i18n.t('Hiển thị trong bộ chọn')} · ${provider.name || provider.id} · ${model.name || model.id} · ${model.id}`);
-        input.addEventListener('change', () => { if (!saveVisibilityChoices([{ providerID: provider.id, choices: [{ modelID: model.id, visible: input.checked }] }])) input.checked = !input.checked; });
+         input.addEventListener('change', () => { if (!saveVisibilityChoices([{ providerID: provider.id, choices: [{ modelID: model.id, visible: input.checked }] }])) input.checked = !input.checked; syncVisibilityGroups(); });
         const sequence = document.createElement('span'); sequence.className = 'provider-sequence'; sequence.textContent = `${modelIndex + 1}.`;
         row.append(sequence, text, toggle); models.append(row);
       }
       fragment.append(group);
     }
-    visibilityModels.append(fragment); i18n.prune();
+     visibilityModels.append(fragment); syncVisibilityGroups(); i18n.prune();
   }
   function saveVisibilityChoices(groups) {
     if (busy || providerLocked || !available || !groups.length) return false;
@@ -343,7 +372,7 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     } catch { message('Không truy cập được bộ nhớ trình duyệt. Hãy cho phép lưu trữ rồi thử lại.'); return false; }
   }
   for (const [id, visible] of [['#provider-visibility-all', true], ['#provider-visibility-none', false]]) document.querySelector(id).addEventListener('click', () => {
-    const groups = [...visibilityModels.querySelectorAll('[data-visibility-group]')].map(group => ({ providerID: group.dataset.visibilityGroup, choices: [...group.querySelectorAll('input')].map(input => ({ modelID: input.dataset.visibilityModel, visible })) }));
+     const groups = [...visibilityModels.querySelectorAll('[data-visibility-group]')].map(group => ({ providerID: group.dataset.visibilityGroup, choices: [...group.querySelectorAll('input[data-visibility-model]')].map(input => ({ modelID: input.dataset.visibilityModel, visible })) }));
     if (saveVisibilityChoices(groups)) syncVisibilityCheckboxes();
   });
   window.addEventListener('storage', event => {
@@ -397,8 +426,8 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     document.querySelector('.provider-editor-body').scrollTop = 0;
     (deleting ? document.querySelector('#provider-editor-close') : providerForm.elements[provider ? 'providerName' : 'providerId']).focus({ preventScroll: true });
   }
-  function closeProviderEditor() {
-    if (!providerEditor.open) return;
+   function closeProviderEditor() {
+     if (!providerEditor.open || providerSubmitting || providerPendingId !== undefined || watchingJob || providerLocked) return;
     const previousId = selectedProviderId;
     clearTimeout(autoScanTimer); connectionVersion++; scannedVersion = -1;
     providerEditor.close(); noticeHome.insertBefore(notice, noticeAnchor);
@@ -436,8 +465,10 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
         if (field === 'id') {
           i18n.attr(checkbox, 'aria-label', () => (`Chọn model ${input.value || i18n.t('mới')}`));
           // Renaming creates a new model; require an explicit visibility choice again.
-          visibility.checked = savedModelVisible(input.value.trim());
-          labelVisibility();
+           visibility.checked = savedModelVisible(input.value.trim());
+           delete row.dataset.visibilityChanged;
+           labelVisibility();
+           lockProvider();
         }
       });
       label.append(caption, input); row.append(label);
@@ -449,7 +480,7 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     const labelVisibility = () => {
       i18n.attr(visibility, 'aria-label', () => `${i18n.t('Hiển thị trong bộ chọn')} · ${row.querySelector('[data-model-field=id]').value || i18n.t('mới')}`);
     };
-    visibility.addEventListener('change', () => { row.dataset.visibilityChanged = 'true'; providerForm.elements.acknowledge.checked = false; });
+     visibility.addEventListener('change', () => { row.dataset.visibilityChanged = 'true'; providerForm.elements.acknowledge.checked = false; lockProvider(); });
     visibilityLabel.append(visibilityCaption, visibility, track); row.append(visibilityLabel); labelVisibility();
     checkbox.addEventListener('change', () => { row.querySelector('[data-model-field=id]').required = checkbox.checked; providerForm.elements.acknowledge.checked = false; lockProvider(); modelCount(); });
     const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'model-remove'; remove.textContent = '×'; i18n.attr(remove, 'aria-label', 'Bỏ model'); i18n.attr(remove, 'title', 'Bỏ model');
@@ -516,7 +547,21 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     finally { lockProvider(); }
   });
   document.querySelector('#provider-select-all').addEventListener('click', () => chooseModels(true));
-  document.querySelector('#provider-uncheck-all').addEventListener('click', () => chooseModels(false));
+   document.querySelector('#provider-uncheck-all').addEventListener('click', () => chooseModels(false));
+   document.querySelector('#provider-delete-models').addEventListener('click', () => {
+     const rows = modelRows().filter(row => row.querySelector('[data-model-selected]').checked);
+     if (busy || !available || providerLocked || !rows.length || !confirm(`Delete ${rows.length} selected models from this form? Save the provider to apply the changes.`)) return;
+     rows.forEach(row => row.remove());
+     if (!modelRows().length) modelRow();
+     providerForm.elements.acknowledge.checked = false; lockProvider(); modelCount(); i18n.prune();
+   });
+   document.querySelector('#provider-model-visibility-all').addEventListener('change', event => {
+     for (const row of modelRows().filter(row => row.querySelector('[data-model-selected]').checked)) {
+       row.querySelector('[data-model-visible]').checked = event.target.checked;
+       row.dataset.visibilityChanged = 'true';
+     }
+     providerForm.elements.acknowledge.checked = false; lockProvider();
+   });
   async function scanModels({ automatic = false } = {}) {
     clearTimeout(autoScanTimer);
     const status = document.querySelector('#provider-scan-status');
@@ -620,7 +665,17 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
     document.querySelector('#provider-import-preview').textContent = 'Select a backup to preview provider, model and API key counts. Secret values are never displayed.';
     lockProvider();
   }
-  document.querySelector('#provider-import-clear').addEventListener('click', clearProviderImport);
+   document.querySelector('#provider-import-clear').addEventListener('click', clearProviderImport);
+   document.querySelector('#provider-import-sample').addEventListener('click', () => {
+     const backup = { format: backupFormat, version: 1, providers: [{
+       id: 'example-provider', name: 'Example Provider', baseURL: 'https://api.example.com/v1', allowHttp: false,
+       models: [{ id: 'example-chat', name: 'Example Chat' }, { id: 'example-reasoning', name: 'Example Reasoning' }, { id: 'example-code', name: 'Example Code' }],
+     }] };
+     const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }));
+     const link = document.createElement('a'); link.href = url; link.download = 'opencode-providers-example.json';
+     try { document.body.append(link); link.click(); }
+     finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+   });
   providerImportFile.addEventListener('change', async () => {
     if (busy || !available || providerLocked || watchingJob || providerImportPending) return;
     providerImportBackup = undefined;

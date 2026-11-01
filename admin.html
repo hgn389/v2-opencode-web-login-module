@@ -37,11 +37,12 @@ main{padding:10px 15px}html[data-embedded] main{padding-top:10px}h1{margin:5px 0
 .blacklist-bulk{flex-wrap:nowrap}.blacklist-bulk label.check{flex-shrink:0;font-size:13px}.blacklist-bulk #blacklist-selected-count{min-width:0;font-size:11px}
 details.provider-visibility-group{display:block}details.provider-visibility-group>summary{display:list-item;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:5px;background:var(--field)}details.provider-visibility-group>summary::marker{color:var(--muted)}details.provider-visibility-group>summary h3{display:inline;font-size:14px}details.provider-visibility-group>summary .provider-visibility-provider-id{display:block;margin:3px 0 0 15px}details.provider-visibility-group>summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}.provider-visibility-count{float:inline-end;color:var(--muted);font-size:12px;font-weight:400;margin-inline-start:10px}.provider-visibility-group-models{display:grid;gap:6px;padding-top:6px}
 .provider-sequence{display:inline-block;min-width:2.5ch;flex-shrink:0;color:var(--muted);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums;margin-inline-end:8px}.provider-list-details .provider-sequence{margin:0}.provider-list-details .provider-list-name{grid-column:2}.provider-list-details:has(.provider-sequence){grid-template-columns:auto minmax(0,1fr);align-items:center}.provider-list-details>code,.provider-list-details>p{grid-column:2}.provider-visibility-row>.provider-sequence{margin:0;text-align:end}.provider-backup h2{margin:0;font-size:17px}.provider-backup button{font-size:13px;padding:6px 10px}.provider-backup input[type=file]{min-width:0;max-width:100%;font:inherit;font-size:13px}.provider-backup .check{font-size:13px}.provider-backup .status{margin:0}
+.provider-model-bulk{margin-inline-start:auto}.provider-model-toolbar{align-items:end}.provider-visibility-toggle{float:inline-end;clear:inline-end;margin-top:5px;margin-inline-start:10px}.provider-visibility-toggle input:indeterminate+.model-switch-track,.provider-model-bulk input:indeterminate+.model-switch-track{background:var(--accent)}.provider-visibility-toggle input:indeterminate+.model-switch-track::after,.provider-model-bulk input:indeterminate+.model-switch-track::after{inset-inline-start:10px}#provider-visibility-models{max-height:none;overflow:visible;scrollbar-gutter:auto;padding:3px}.provider-visibility-group-models{max-height:none;overflow:visible}details.provider-visibility-group>summary{display:flow-root;list-style:none}details.provider-visibility-group>summary::before{content:'>';display:inline-block;margin-inline-end:8px;color:var(--muted)}details.provider-visibility-group[open]>summary::before{transform:rotate(90deg)}
 </style>
 <script src="/web-login/admin-ui.js" type="module"></script>
 </head>
 <body><main>
-<nav aria-label="Cài đặt Web Login Module" data-i18n-aria-label="m230"><a href="/web-login/password"><span data-i18n="m000">Đổi mật khẩu</span></a><a href="/web-login/updates"><span data-i18n="m003">Cập nhật Web Login Module</span></a><a href="/web-login/opencode"><span data-i18n="m001">Update &amp; Downgrade</span></a><a href="/web-login/providers"><span data-i18n="m002">Nhà cung cấp tùy chỉnh</span></a><a href="/web-login/blacklist">IP Blacklist</a></nav>
+<nav aria-label="Cài đặt Web Login Module" data-i18n-aria-label="m230"><a href="/web-login/password"><span data-i18n="m000">Đổi mật khẩu</span></a><a href="/web-login/updates"><span data-i18n="m003">Cập nhật Web Login Module</span></a><a href="/web-login/opencode"><span data-i18n="m001">Update &amp; Downgrade</span></a><a href="/web-login/providers"><span data-i18n="m002">Nhà cung cấp tùy chỉnh</span></a><a href="/web-login/blacklist">IP Blacklist</a><a href="/web-login/transfer">Import / Export JSON</a></nav>
 <div id="notice" class="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 <section id="blacklist-page" hidden>
 <h1>IP Blacklist</h1>
@@ -112,15 +113,6 @@ details.provider-visibility-group{display:block}details.provider-visibility-grou
 <p id="provider-visibility-empty" class="note" hidden><span data-i18n="m284">Chưa có nhà cung cấp nào.</span></p>
 <div id="provider-visibility-models"></div>
 </div>
-<div id="provider-backup" class="settings-card provider-backup" aria-labelledby="provider-backup-heading">
-<h2 id="provider-backup-heading">Import / Export JSON</h2>
-<div class="actions"><button id="provider-export" type="button" disabled>Export JSON</button><label class="check"><input id="provider-export-secrets" type="checkbox" aria-describedby="provider-backup-warning" disabled><span>Include API keys (opt-in)</span></label></div>
-<p id="provider-backup-warning" class="note">API keys in JSON are plaintext secrets. Keep backups private. Export excludes keys by default. Import only adds new provider IDs; existing IDs are never overwritten. The server performs final validation.</p>
-<label>Import JSON (maximum 2 MB)<input id="provider-import-file" type="file" accept=".json,application/json" aria-describedby="provider-backup-warning provider-import-preview" disabled></label>
-<p id="provider-import-preview" class="note" role="status" aria-live="polite">Select a backup to preview provider, model and API key counts. Secret values are never displayed.</p>
-<div class="actions"><button id="provider-import" type="button" disabled>Import JSON</button><button id="provider-import-clear" type="button" disabled>Clear</button></div>
-<p id="provider-import-status" class="status" role="status" aria-live="polite"></p>
-</div>
 <dialog id="provider-editor" aria-labelledby="provider-editor-title">
 <div class="provider-editor-header"><h2 id="provider-editor-title"><span data-i18n="m009">Thêm nhà cung cấp mới</span></h2><button id="provider-editor-close" type="button"><span data-i18n="m055">Đóng</span></button></div>
 <div class="provider-editor-body">
@@ -141,7 +133,7 @@ details.provider-visibility-group{display:block}details.provider-visibility-grou
 <fieldset class="settings-card"><legend><span data-i18n="m271">Model</span></legend><p class="note"><span data-i18n="m272">Nhập model thủ công hoặc quét danh sách từ API /models của nhà cung cấp. Chỉ model được đánh dấu mới được lưu, tối đa 2000 model.</span></p>
 <p class="note"><span data-i18n="m287">Model mới mặc định tắt. Bật công tắc, lưu rồi tải lại OpenCode. Chỉ áp dụng trên trình duyệt này.</span></p>
 <label class="check"><input name="allowPrivate" type="checkbox"><span><span data-i18n="m273">Cho phép quét router trên máy chủ hoặc mạng nội bộ (localhost/LAN)</span></span></label>
-<div class="actions"><button id="provider-scan-models" type="button"><span data-i18n="m274">Quét model</span></button><button id="provider-select-all" type="button"><span data-i18n="m275">Select All</span></button><button id="provider-uncheck-all" type="button"><span data-i18n="m276">Uncheck All</span></button></div>
+<div class="actions provider-model-toolbar"><button id="provider-scan-models" type="button"><span data-i18n="m274">Quét model</span></button><button id="provider-select-all" type="button"><span data-i18n="m275">Select All</span></button><button id="provider-uncheck-all" type="button"><span data-i18n="m276">Uncheck All</span></button><button id="provider-delete-models" class="provider-list-delete" type="button" disabled>Delete</button><label class="model-visibility provider-model-bulk"><span class="model-field-caption" data-i18n="m286">Hiển thị trong bộ chọn</span><input id="provider-model-visibility-all" type="checkbox" role="switch" aria-label="Show selected models in model selector"><span class="model-switch-track" aria-hidden="true"></span></label></div>
 <p id="provider-scan-status" class="note" role="status" aria-live="polite"></p>
 <p id="provider-model-count" class="note" role="status" aria-live="polite"></p>
 <div id="provider-models"></div>
@@ -155,6 +147,20 @@ details.provider-visibility-group{display:block}details.provider-visibility-grou
 </form>
 </div>
 </dialog>
+</section>
+<section id="transfer-page" hidden>
+<h1>Import / Export JSON</h1>
+<div id="provider-backup" class="settings-card provider-backup" aria-labelledby="provider-backup-heading">
+<h2 id="provider-backup-heading">Provider JSON</h2>
+<div class="actions"><button id="provider-export" type="button" disabled>Export JSON</button><label class="check"><input id="provider-export-secrets" type="checkbox" aria-describedby="provider-backup-warning" disabled><span>Include API keys (opt-in)</span></label></div>
+<p id="provider-backup-warning" class="note">API keys in JSON are plaintext secrets. Keep backups private. Export excludes keys by default. Import only adds new provider IDs; existing IDs are never overwritten. The server performs final validation.</p>
+<div class="actions"><button id="provider-import-sample" type="button">Download sample JSON</button></div>
+<p class="note">The sample contains one provider and three example models, without API keys. Replace the provider ID, name, Base URL and model IDs with your own values before importing. Add an optional apiKey field only when needed; do not share files containing keys.</p>
+<label>Import JSON (maximum 2 MB)<input id="provider-import-file" type="file" accept=".json,application/json" aria-describedby="provider-backup-warning provider-import-preview" disabled></label>
+<p id="provider-import-preview" class="note" role="status" aria-live="polite">Select a backup to preview provider, model and API key counts. Secret values are never displayed.</p>
+<div class="actions"><button id="provider-import" type="button" disabled>Import JSON</button><button id="provider-import-clear" type="button" disabled>Clear</button></div>
+<p id="provider-import-status" class="status" role="status" aria-live="polite"></p>
+</div>
 </section>
 <footer>OpenCode Web Login · v{{VERSION}}<br><a href="/" target="_top"><span data-i18n="m219">Quay lại OpenCode</span></a> · <a href="/logout" target="_top"><span data-i18n="m217">Đăng xuất</span></a></footer>
 </main></body></html>
