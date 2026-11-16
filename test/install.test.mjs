@@ -39,7 +39,7 @@ test('failed installation restores files, dependencies and service state', { ski
       else if(args[0]==='restart' && args[1]===${JSON.stringify(backend)} && !existsSync(${JSON.stringify(failure)})) {writeFileSync(${JSON.stringify(failure)},'failed');process.exitCode=1;}
     } else if(name==='getent') {
       console.log(args[0]==='passwd'?${JSON.stringify(`${name}:x:0:0:fixture:/var/lib/${name}:/usr/sbin/nologin`)}:${JSON.stringify(`${name}:x:0:`)});
-    } else if(name==='npm') {mkdirSync('node_modules');cpSync(${JSON.stringify(new URL('../node_modules/jsonc-parser', import.meta.url).pathname)},'node_modules/jsonc-parser',{recursive:true});writeFileSync('node_modules/fixture','new-dependencies');}
+    } else if(name==='npm') {if(process.umask()!==0o022)throw new Error('Dependencies require a service-readable umask');mkdirSync('node_modules');cpSync(${JSON.stringify(new URL('../node_modules/jsonc-parser', import.meta.url).pathname)},'node_modules/jsonc-parser',{recursive:true});writeFileSync('node_modules/fixture','new-dependencies');}
   `;
   try {
     mkdirSync(tools);
@@ -48,7 +48,8 @@ test('failed installation restores files, dependencies and service state', { ski
     for (const [path, text] of originals) { mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, text, { mode: path === environment ? 0o640 : 0o644 }); }
     mkdirSync(join(directory, 'node_modules'));
     writeFileSync(join(directory, 'node_modules', 'fixture'), 'previous-dependencies');
-    const child = spawn(process.execPath, [new URL('../bin/opencode-web-login.mjs', import.meta.url).pathname, 'install', '--name', name, '--install-dir', directory, '--opencode-service', backend, '--opencode-bin', '/usr/bin/true', '--port', String(port), '--backend-port', String(port === 65535 ? 65534 : port + 1)], { env: { ...process.env, OPENCODE_PASSWORD: 'isolated-installer-fixture', PATH: `${tools}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const cli = new URL('../bin/opencode-web-login.mjs', import.meta.url);
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `process.umask(0o077);process.argv=[process.argv[0],${JSON.stringify(cli.pathname)},...process.argv.slice(1)];await import(${JSON.stringify(cli.href)});`, '--', 'install', '--name', name, '--install-dir', directory, '--opencode-service', backend, '--opencode-bin', '/usr/bin/true', '--port', String(port), '--backend-port', String(port === 65535 ? 65534 : port + 1)], { env: { ...process.env, OPENCODE_PASSWORD: 'isolated-installer-fixture', PATH: `${tools}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
     child.stdout.resume(); child.stderr.on('data', (chunk) => { stderr += chunk; });
     const [code] = await once(child, 'exit');

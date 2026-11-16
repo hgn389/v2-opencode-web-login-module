@@ -274,7 +274,13 @@ WantedBy=multi-user.target
       copyFileSync(join(source, file), dest);
       chmodSync(dest, file.startsWith('bin/') ? 0o755 : 0o644);
     }
-    execFileSync('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: staging, stdio: 'inherit' });
+    // Dependencies must remain readable by the unprivileged gateway user.
+    const previousMask = process.umask(0o022);
+    try {
+      execFileSync('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: staging, stdio: 'inherit' });
+    } finally {
+      process.umask(previousMask);
+    }
     const { protectBackendPassword } = await import(pathToFileURL(join(staging, 'admin-service.mjs')).href);
     restorePassword = protectBackendPassword({ name, backendService });
     if (!account) command('useradd', ['--system', '--user-group', '--home-dir', `/var/lib/${name}`, '--shell', '/usr/sbin/nologin', name]);
