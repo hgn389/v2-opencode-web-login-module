@@ -189,7 +189,7 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
       }
       if (data.job?.phase === 'failed') { providerPendingId = undefined; providerPendingVisibility = undefined; }
       renderProviderVisibility(savedProvider);
-      i18n.text(document.querySelector('#provider-info'), () => (providerData.supported ? '' : providerData.reason || 'Chưa đọc được cấu hình nhà cung cấp.'));
+      i18n.text(document.querySelector('#provider-info'), () => (providerData.supported ? providerData.visibilityError || '' : providerData.reason || 'Chưa đọc được cấu hình nhà cung cấp.'));
       i18n.text(document.querySelector('#provider-job'), () => (data.job?.type === 'providers' && data.job.phase !== 'succeeded' ? data.job.message || '' : ''));
       lockProvider(); return;
     }
@@ -303,7 +303,7 @@ import { modelPreferenceKey, readModelPreferences, modelVisible, saveModelVisibi
      }
    }
   function renderProviderVisibility(preferred) {
-    const providers = (providerData.providers || []).filter(provider => /^[a-z0-9][a-z0-9_-]{0,62}$/.test(provider.id) && provider.models?.length);
+    const providers = (providerData.visibilityProviders || providerData.providers || []).filter(provider => /^[a-z0-9][a-z0-9_-]{0,62}$/.test(provider.id) && provider.models?.length);
     if (providers.length) document.querySelector('#provider-visibility-apply').hidden = false;
     const key = JSON.stringify(providers.map(({ id, name, models }) => [id, name, models]));
     if (key !== visibilityCatalogKey || preferred) {

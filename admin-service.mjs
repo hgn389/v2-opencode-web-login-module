@@ -291,6 +291,28 @@ async function providerWorker(config, context, request) {
   return result;
 }
 
+export async function builtinVisibilityProviders(config, { credentials = runningCredentials, probe = readResponse } = {}) {
+  const { password, username } = credentials(config);
+  const connection = { hostname: config.gateway.backendHost, port: config.gateway.backendPort,
+    headers: { authorization: 'Basic ' + Buffer.from(username + ':' + password).toString('base64') } };
+  const read = async path => {
+    const response = await probe({ ...connection, path }, { timeout: 2000, limit: 4 * 1024 * 1024 });
+    if (response.status !== 200) throw new Error('Built-in catalog unavailable');
+    const payload = JSON.parse(response.body);
+    return payload.data || payload;
+  };
+  const provider = await read('/api/provider/opencode');
+  if (provider.id !== 'opencode' || provider.integrationID !== 'opencode') throw new Error('Unexpected built-in provider');
+  const catalog = await read('/api/model');
+  if (!Array.isArray(catalog)) throw new Error('Invalid model catalog');
+  const text = value => typeof value === 'string' && value.length > 0 && value.length <= 500 && !/[\x00-\x1f\x7f]/.test(value);
+  const models = new Map();
+  for (const model of catalog) {
+    if (model?.providerID === provider.id && text(model.id) && model.id.length <= 128) models.set(model.id, { id: model.id, name: text(model.name) ? model.name : model.id });
+  }
+  return [{ id: provider.id, name: text(provider.name) ? provider.name : provider.id, models: [...models.values()] }];
+}
+
 async function providerReload(config, id, models, remove, baseURL) {
   const { password, username } = runningCredentials(config);
   const headers = { authorization: 'Basic ' + Buffer.from(username + ':' + password).toString('base64') };
@@ -551,6 +573,7 @@ export function createAdminController(config, dependencies = {}) {
   const getProviderContext = dependencies.providerContext || (() => providerContext(config));
   const runProvider = dependencies.providerWorker || ((context, request) => providerWorker(config, context, request));
   const reloadProvider = dependencies.providerReload || ((...args) => providerReload(config, ...args));
+  const visibilityProviders = dependencies.visibilityProviders || (() => builtinVisibilityProviders(config));
   const providerExists = dependencies.providerExists || (async id => {
     const { password, username } = runningCredentials(config);
     const response = await readResponse({ hostname: config.gateway.backendHost, port: config.gateway.backendPort, path: '/api/provider/' + encodeURIComponent(id), headers: { authorization: 'Basic ' + Buffer.from(username + ':' + password).toString('base64') } }, { timeout: 2000, limit: 1024 * 1024 });
@@ -616,7 +639,16 @@ export function createAdminController(config, dependencies = {}) {
     try {
       const context = await getProviderContext(), result = await runProvider(context, { action: 'read' });
       if (result.status !== 200) return { ...status(), providers: { supported: false, reason: result.message } };
-      return { ...status(), providers: result };
+      const catalog = (result.providers || []).map(({ id, name, models }) => ({ id, name, models: (models || []).map(({ id, name }) => ({ id, name })) }));
+      let visibilityError = '';
+      try {
+        for (const provider of await visibilityProviders()) {
+          const existing = catalog.find(item => item.id === provider.id);
+          if (existing) existing.models = [...new Map([...existing.models, ...provider.models].map(model => [model.id, model])).values()];
+          else catalog.push(provider);
+        }
+      } catch { visibilityError = 'Built-in model catalog unavailable. Custom provider visibility is still available.'; }
+      return { ...status(), providers: { ...result, visibilityProviders: catalog, visibilityError } };
     } catch (error) { return { ...status(), providers: { supported: false, reason: error.publicMessage || 'Chưa đọc được cấu hình nhà cung cấp. Kiểm tra quyền tệp và dịch vụ OpenCode.' } }; }
   }
   async function changeProvider(context, fields, input, remove, credential, importing = false) {

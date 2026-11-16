@@ -72,3 +72,19 @@ test('malformed native preferences and invalid changes never overwrite existing 
   assert.equal(storage.getItem(modelPreferenceKey), null);
   assert.throws(() => saveModelVisibility({ getItem: () => null, setItem() { throw new Error('Quota exceeded'); } }, 'router', [{ modelID: 'one', visible: false }]));
 });
+
+test('real built-in identities support individual, provider and global visibility without alias collisions', () => {
+  const storage = memory({ user: [], recent: [{ providerID: 'opencode', modelID: 'big-pickle' }], variant: {} });
+  const builtins = ['big-pickle', 'beam-free'];
+  saveModelVisibility(storage, 'opencode', [{ modelID: 'big-pickle', visible: false }]);
+  assert.equal(modelVisible(readModelPreferences(storage), 'opencode', 'big-pickle'), false);
+  saveModelVisibilityBatch(storage, [{ providerID: 'opencode', choices: builtins.map(modelID => ({ modelID, visible: true })) }]);
+  for (const id of builtins) assert.equal(modelVisible(readModelPreferences(storage), 'opencode', id), true);
+  saveModelVisibilityBatch(storage, [
+    { providerID: 'opencode', choices: builtins.map(modelID => ({ modelID, visible: false })) },
+    { providerID: 'opencode_free_combo_9r', choices: [{ modelID: 'oc/beam-free', visible: false }] },
+  ]);
+  for (const id of builtins) assert.equal(modelVisible(readModelPreferences(storage), 'opencode', id), false);
+  assert.equal(modelVisible(readModelPreferences(storage), 'opencode_free_combo_9r', 'oc/beam-free'), false);
+  assert.deepEqual(readModelPreferences(storage).recent, [{ providerID: 'opencode', modelID: 'big-pickle' }]);
+});

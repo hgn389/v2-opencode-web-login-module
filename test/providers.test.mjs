@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { parse } from 'jsonc-parser';
 import { once } from 'node:events';
 import http from 'node:http';
-import { createAdminController, providerFileOperation, validateCustomProvider, discoverProviderModels } from '../admin-service.mjs';
+import { createAdminController, providerFileOperation, validateCustomProvider, discoverProviderModels, builtinVisibilityProviders } from '../admin-service.mjs';
 import { createLoginServer } from '../index.mjs';
 import { SecurityStore } from '../security.mjs';
 
@@ -20,6 +20,95 @@ const fixture = () => {
   mkdirSync(context.directory, { mode: 0o700 });
   return { directory, context, file: join(context.directory, 'opencode.jsonc'), close: () => rmSync(directory, { recursive: true, force: true }) };
 };
+
+test('built-in visibility reads the authenticated bounded v2 catalog and returns only real identities', async () => {
+  const calls = [];
+  const providers = await builtinVisibilityProviders({ gateway: { backendHost: '127.0.0.1', backendPort: 4097 } }, {
+    credentials: () => ({ username: 'fixture-user', password }),
+    probe: async (options, bounds) => {
+      calls.push(options.path);
+      assert.equal(options.headers.authorization, 'Basic ' + Buffer.from('fixture-user:' + password).toString('base64'));
+      assert.equal(options.method, undefined);
+      assert.equal(options.hostname, '127.0.0.1'); assert.equal(options.port, 4097);
+      assert.equal(bounds.timeout, 2000); assert.equal(bounds.limit, 4 * 1024 * 1024);
+      return { status: 200, body: JSON.stringify({ location: 'fixture', data: options.path.includes('/provider/')
+        ? { id: 'opencode', integrationID: 'opencode', name: 'OpenCode', settings: { apiKey }, package: 'private-package' }
+        : [{ providerID: 'opencode', id: 'big-pickle', modelID: 'different-upstream-id', name: 'Big Pickle', settings: { apiKey } },
+          { providerID: 'opencode', id: 'beam-free', name: 'Beam Free', enabled: false },
+          { providerID: 'opencode_free_combo_9r', id: 'oc/beam-free', name: 'Not the built-in' },
+          { providerID: 'opencode', id: 'future-model', name: 'Future Model' },
+          { providerID: 'opencode', id: '', name: 'Invalid' }, null] }) };
+    },
+  });
+  assert.deepEqual(calls, ['/api/provider/opencode', '/api/model']);
+  assert.deepEqual(providers, [{ id: 'opencode', name: 'OpenCode', models: [
+    { id: 'big-pickle', name: 'Big Pickle' }, { id: 'beam-free', name: 'Beam Free' }, { id: 'future-model', name: 'Future Model' },
+  ] }]);
+  assert(!JSON.stringify(providers).includes(apiKey));
+});
+
+test('invalid, unavailable and oversized built-in catalogs are rejected without leaking backend errors', async () => {
+  for (const response of [{ status: 401, body: apiKey }, { status: 500, body: apiKey }, { status: 200, body: '{' },
+    { status: 200, body: '{"data":{"id":"opencode_free_combo_9r"}}' },
+    { status: 200, body: '{"data":{"id":"opencode","integrationID":"opencode"}}' }]) {
+    await assert.rejects(builtinVisibilityProviders({ gateway: {} }, {
+      credentials: () => ({ username: 'fixture', password }), probe: async () => response,
+    }));
+  }
+  await assert.rejects(builtinVisibilityProviders({ gateway: {} }, {
+    credentials: () => ({ username: 'fixture', password }), probe: async () => { throw new Error('Response too large'); },
+  }));
+});
+
+test('visibility catalog is separate from configured providers, file mutations and export; errors retain custom providers', async () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.directory, 'package.json'), '{"version":"2.0.4"}');
+    const read = () => providerFileOperation(f.context, { action: 'read' });
+    providerFileOperation(f.context, { action: 'save', revision: read().revision, provider: provider() });
+    const before = read(), file = join(f.context.directory, 'opencode.json'), original = readFileSync(file, 'utf8');
+    const actions = [];
+    let fail = false;
+    const controller = createAdminController({ installDirectory: f.directory }, {
+      stateDir: join(f.directory, 'state'), password: () => password, providerContext: async () => f.context,
+      providerWorker: async (context, request) => { actions.push(request.action); return providerFileOperation(context, request); },
+      visibilityProviders: async () => {
+        if (fail) throw new Error(apiKey);
+        return [{ id: 'opencode', name: 'OpenCode', models: [{ id: 'big-pickle', name: 'Big Pickle' }] }];
+      },
+    });
+    const result = (await controller.call({ operation: 'providers-status' })).providers;
+    assert.deepEqual(result.providers, before.providers);
+    assert.equal(result.revision, before.revision);
+    assert.deepEqual(result.visibilityProviders.map(p => p.id), ['acme', 'opencode']);
+    assert.deepEqual(Object.keys(result.visibilityProviders[0]).sort(), ['id', 'models', 'name']);
+    assert.equal(result.visibilityError, '');
+    const exported = await controller.call({ operation: 'provider-export', includeSecrets: false });
+    assert.equal(exported.status, 200);
+    assert(!JSON.stringify(exported).includes('big-pickle'));
+    assert(!JSON.stringify(exported).includes('"id":"opencode"'));
+    fail = true;
+    const degraded = (await controller.call({ operation: 'providers-status' })).providers;
+    assert.equal(degraded.supported, true); assert.deepEqual(degraded.providers, before.providers);
+    assert.deepEqual(degraded.visibilityProviders.map(p => p.id), ['acme']);
+    assert(degraded.visibilityError.includes('unavailable')); assert(!JSON.stringify(degraded).includes(apiKey));
+    assert(actions.every(action => ['read', 'export'].includes(action)));
+    assert.equal(readFileSync(file, 'utf8'), original);
+  } finally { f.close(); }
+});
+
+test('UI visibility uses the separate catalog while management keeps the configured provider list', () => {
+  const ui = readFileSync(new URL('../admin-ui.js', import.meta.url), 'utf8');
+  const visibility = ui.slice(ui.indexOf('function renderProviderVisibility('), ui.indexOf('function renderVisibilityModels('));
+  assert(visibility.includes('providerData.visibilityProviders || providerData.providers'));
+  const management = ui.slice(ui.indexOf('function renderProviders('), ui.indexOf('function openProviderEditor('));
+  assert(management.includes('providerData.providers || []'));
+  assert(!management.includes('visibilityProviders'));
+  const editor = ui.slice(ui.indexOf('function openProviderEditor('), ui.indexOf('function fillProvider('));
+  assert(editor.includes('if (id && !provider?.editable) return;'));
+  assert(!editor.includes('visibilityProviders'));
+  assert(ui.includes('providerData.visibilityError'));
+});
 
 test('custom provider validation restricts IDs, URLs, interpolation, secrets and model definitions', () => {
   assert.equal(validateCustomProvider({ ...provider(), id: '9router' }).id, '9router');
