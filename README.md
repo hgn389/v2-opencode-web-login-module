@@ -3,7 +3,9 @@
 A standalone login and security gateway in front of OpenCode. It connects to the OpenCode HTTP API without modifying OpenCode's source files. The systemd installer also enables a separate privileged administration service.
 
 Repository: [hgn389/v2-opencode-web-login-module](https://github.com/hgn389/v2-opencode-web-login-module).
-Current package version: **2.0.2**.
+Current package version: **2.0.3**.
+
+Version 2.0.3 fixes installation from clean release archives by loading administration dependencies only after they have been installed. Existing installations on 2.0.1 can update directly to 2.0.3.
 
 ## Features
 
@@ -206,8 +208,8 @@ git diff --check
 The packaging command runs `npm pack --ignore-scripts`, validates the entire archive through the real updater (including exact runtime manifest, package identity and dependency locks), then writes:
 
 ```text
-v2-opencode-web-login-module-2.0.2.tgz
-v2-opencode-web-login-module-2.0.2.tgz.sha256
+v2-opencode-web-login-module-2.0.3.tgz
+v2-opencode-web-login-module-2.0.3.tgz.sha256
 ```
 
 Only files in the updater allowlist may appear. Tests, packaging scripts, repository metadata and operational state are excluded. The README, font and existing license notices remain included. Dependencies are fetched from npm at installation, not bundled from local `node_modules`.
@@ -217,8 +219,8 @@ Publication is a separate, explicitly authorized step: create a matching version
 After an authorized release exists, users can download both attachments from the repository's release page and verify before installation:
 
 ```sh
-sha256sum --check v2-opencode-web-login-module-2.0.2.tgz.sha256
-sudo npm install -g --ignore-scripts ./v2-opencode-web-login-module-2.0.2.tgz
+sha256sum --check v2-opencode-web-login-module-2.0.3.tgz.sha256
+sudo npm install -g --ignore-scripts ./v2-opencode-web-login-module-2.0.3.tgz
 opencode-web-login --help
 ```
 

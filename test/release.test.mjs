@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compareVersions, extractPackage, latestRelease, moduleFiles, modulePackage, repository } from '../update.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -58,6 +58,9 @@ test('release packaging produces an updater-compatible allowlisted archive and c
     const expected = { version: pkg.version, size: archive.length, digest };
     extractPackage(archive, join(directory, 'extracted'), expected);
     for (const file of moduleFiles) assert(existsSync(join(directory, 'extracted', file)), file);
+    assert(!existsSync(join(directory, 'extracted', 'node_modules')));
+    const installer = join(directory, 'extracted', 'install.mjs');
+    execFileSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(installer).href)})`], { cwd: directory, encoding: 'utf8' });
     for (const file of ['test/live-clean-readonly.mjs', 'HANDOFF.md', 'Readme.md', 'scripts/release.mjs', '.git/config']) {
       assert(!moduleFiles.includes(file));
       assert(!existsSync(join(directory, 'extracted', file)));

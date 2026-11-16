@@ -30,7 +30,7 @@ test('failed installation restores files, dependencies and service state', { ski
   const failure = join(dir, 'failure-injected');
   const script = `#!${process.execPath}
     import {basename} from 'node:path';
-    import {appendFileSync,existsSync,writeFileSync,mkdirSync} from 'node:fs';
+    import {appendFileSync,existsSync,writeFileSync,mkdirSync,cpSync} from 'node:fs';
     const name=basename(process.argv[1]); const args=process.argv.slice(2);
     appendFileSync(${JSON.stringify(log)},JSON.stringify({name,args})+'\\n');
     if(name==='systemctl') {
@@ -39,7 +39,7 @@ test('failed installation restores files, dependencies and service state', { ski
       else if(args[0]==='restart' && args[1]===${JSON.stringify(backend)} && !existsSync(${JSON.stringify(failure)})) {writeFileSync(${JSON.stringify(failure)},'failed');process.exitCode=1;}
     } else if(name==='getent') {
       console.log(args[0]==='passwd'?${JSON.stringify(`${name}:x:0:0:fixture:/var/lib/${name}:/usr/sbin/nologin`)}:${JSON.stringify(`${name}:x:0:`)});
-    } else if(name==='npm') {mkdirSync('node_modules');writeFileSync('node_modules/fixture','new-dependencies');}
+    } else if(name==='npm') {mkdirSync('node_modules');cpSync(${JSON.stringify(new URL('../node_modules/jsonc-parser', import.meta.url).pathname)},'node_modules/jsonc-parser',{recursive:true});writeFileSync('node_modules/fixture','new-dependencies');}
   `;
   try {
     mkdirSync(tools);

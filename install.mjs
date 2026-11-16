@@ -2,13 +2,12 @@ import { parseArgs } from 'node:util';
 import { accessSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, chmodSync, lstatSync, chownSync, renameSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import net from 'node:net';
 import { normalizeConfig, loginAddress } from './config.mjs';
 import { readResponse, protectedBackend } from './http-client.mjs';
 import { moduleFiles } from './update.mjs';
-import { protectBackendPassword } from './admin-service.mjs';
 
 const source = dirname(fileURLToPath(import.meta.url));
 const files = moduleFiles;
@@ -276,6 +275,7 @@ WantedBy=multi-user.target
       chmodSync(dest, file.startsWith('bin/') ? 0o755 : 0o644);
     }
     execFileSync('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: staging, stdio: 'inherit' });
+    const { protectBackendPassword } = await import(pathToFileURL(join(staging, 'admin-service.mjs')).href);
     restorePassword = protectBackendPassword({ name, backendService });
     if (!account) command('useradd', ['--system', '--user-group', '--home-dir', `/var/lib/${name}`, '--shell', '/usr/sbin/nologin', name]);
     changed = true;
